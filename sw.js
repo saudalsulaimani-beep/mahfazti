@@ -1,5 +1,5 @@
 // عامل الخدمة: يخلي التطبيق يفتح بدون نت، ويجيب الأسعار من الشبكة أولاً
-const VERSION = 'mahfazti-v2';
+const VERSION = 'mahfazti-v3';
 const SHELL = ['./', 'index.html', 'app.css', 'app.js', 'manifest.webmanifest', 'data/tickers.json',
   'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png', 'icons/favicon-32.png'];
 
@@ -20,7 +20,7 @@ self.addEventListener('fetch', (e) => {
   const networkFirst = url.pathname.endsWith('/data/market.json') || url.origin === location.origin;
   if (networkFirst) {
     e.respondWith(
-      fetch(e.request).then((res) => {
+      fetch(e.request, { cache: 'no-cache' }).then((res) => {
         if (res.ok) {
           const copy = res.clone();
           const key = url.pathname.endsWith('/data/market.json') ? new Request(url.origin + url.pathname) : e.request;

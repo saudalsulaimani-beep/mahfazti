@@ -652,7 +652,12 @@ async function boot() {
   setInterval(() => { if (document.visibilityState === 'visible' && marketOpen()) fetchMarket(false); }, 120000);
   setInterval(renderStatus, 30000);
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && Date.now() - lastFetch > 60000) fetchMarket(false); });
-  if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+  if ('serviceWorker' in navigator) {
+    // لما ينزل تحديث للتطبيق، يعيد التحميل مرة وحدة عشان تشوف النسخة الجديدة فوراً
+    let reloaded = false;
+    navigator.serviceWorker.addEventListener('controllerchange', () => { if (!reloaded) { reloaded = true; location.reload(); } });
+    navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then((r) => r.update()).catch(() => {});
+  }
 }
 boot();
 })();
