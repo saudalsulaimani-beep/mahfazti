@@ -22,6 +22,7 @@ const KEY = 'mahfazti.v1';
 let S = load();            // {cash, holdings:[{id,code,name,qty,cost,stop,target,manual}], watch:[{id,code,name,buyBelow,note}]}
 let M = null;              // market.json
 let TICK = [];             // data/tickers.json
+let NOTES = {};            // data/notes.json — ملاحظات المحلل المكتوبة
 let view = 'home';
 let mktSort = 'up';
 let mktQuery = '';
@@ -182,6 +183,55 @@ function alerts(c) {
   return out.sort((a, b) => order[a.t] - order[b.t]);
 }
 
+/* ───────── المحلل ─────────
+   يجمع: الأرباح (من ملاحظات مكتوبة بتاريخها) + الاتجاه + التوزيعات + خطتك أنت.
+   كل عامل ظاهر بسببه، والخلاصة ميزان مو توقع. */
+function analyze(code) {
+  const q = Q(code); if (!q || code === 'TASI') return null;
+  const own = S.holdings.find((h) => h.code === code);
+  const note = NOTES.notes?.[code];
+  const F = [];
+  if (note) {
+    const sc = { 'إيجابي': 2, 'سلبي': -2, 'مختلط': 0 }[note.fund] ?? 0;
+    F.push({ k: 'الأرباح والأخبار', s: sc, t: note.fund === 'إيجابي' ? 'أرباح تنمو' : note.fund === 'سلبي' ? 'أرباح نازلة أو خسائر' : 'صورة مختلطة' });
+  } else F.push({ k: 'الأرباح والأخبار', s: 0, t: 'ما راجعت نتائجها بعد', na: true });
+  const m50 = sma(q.c, 50), p3 = perf(q, 63);
+  if (m50 && p3 != null) {
+    const s = q.p > m50 && p3 > 0 ? 1 : q.p < m50 && p3 < 0 ? -1 : 0;
+    F.push({ k: 'الاتجاه', s, t: s > 0 ? `صاعد: فوق متوسط ٥٠ يوم و${pct(p3)} بثلاث أشهر` : s < 0 ? `هابط: تحت متوسط ٥٠ يوم و${pct(p3)} بثلاث أشهر` : `متذبذب: ${pct(p3)} بثلاث أشهر` });
+  }
+  const yl = q.div && q.p ? q.div / q.p * 100 : 0;
+  F.push({ k: 'التوزيعات', s: yl >= 4.5 ? 1 : yl === 0 ? -1 : 0, t: yl ? `عائد ${num(yl.toFixed(1) + '%')} بالسنة` : 'ما توزع أرباح' });
+  const pos = q.h52 > q.l52 ? (q.p - q.l52) / (q.h52 - q.l52) * 100 : null;
+  if (pos != null) F.push({ k: 'السعر من مدى السنة', s: 0, t: pos < 15 ? `قريب من أدنى سعر بالسنة (${num(pos.toFixed(0) + '%')}): رخيص نسبياً، أو فيه سبب للنزول` : pos > 85 ? `قريب من أعلى سعر بالسنة (${num(pos.toFixed(0) + '%')})` : `في نص المدى (${num(pos.toFixed(0) + '%')})` });
+  const score = F.reduce((a, f) => a + f.s, 0);
+  let v, tone, why;
+  const p = q.p;
+  if (own && own.stop != null && p <= own.stop) { v = 'بيع حسب خطتك'; tone = 'loss'; why = `السعر ${num(fmt(p))} كسر وقف الخسارة اللي حددته ${num(fmt(own.stop))}. خطتك تقول اطلع.`; }
+  else if (own) {
+    if (score >= 2) { v = 'احتفاظ'; tone = 'gain'; why = 'الأرقام تدعم السهم. احتفظ وخل وقف خسارة يحمي ربحك.'; }
+    else if (score <= -2) { v = 'الميزان يميل للبيع'; tone = 'loss'; why = 'أغلب العوامل سلبية. اسأل نفسك: ليش أحتفظ فيه؟ إذا ما عندك سبب واضح، فلوسك ممكن تشتغل في سهم أقوى.'; }
+    else { v = 'احتفاظ بحذر'; tone = 'warn'; why = 'الصورة مختلطة. حدد وقف خسارة وراقب النتائج الجاية.'; }
+    if (own.stop == null && tone !== 'loss') why += ' ما حددت وقف خسارة لهذا السهم.';
+  } else {
+    if (score >= 2) { v = 'مرشح للشراء'; tone = 'gain'; why = 'الأرقام قوية. حدد سعر دخول في المراقبة وادخل بجزء من السيولة مو كلها.'; }
+    else if (score <= -2) { v = 'ابتعد حالياً'; tone = 'loss'; why = 'أغلب العوامل سلبية في الوقت الحالي.'; }
+    else { v = 'راقب'; tone = 'warn'; why = 'مو واضح. انتظر نتائج أو إشارة أوضح.'; }
+  }
+  return { F, score, v, tone, why, note, pos };
+}
+function verdictChip(a) { return a ? `<span class="vchip ${a.tone}">${a.v}</span>` : ''; }
+function analysisBlock(a) {
+  if (!a) return '';
+  return `<section class="analyst ${a.tone}">
+    <div class="an-h"><span class="an-l">رأي المحلل</span>${verdictChip(a)}</div>
+    <div class="an-why">${a.why}</div>
+    <ul class="factors">${a.F.map((f) => `<li><span class="fs ${f.s > 0 ? 'up' : f.s < 0 ? 'down' : 'flat'}">${f.s > 0 ? '+' : f.s < 0 ? '−' : '•'}</span><b>${f.k}:</b> ${f.t}</li>`).join('')}</ul>
+    ${a.note ? `<div class="an-note">${esc(a.note.text)}<div class="an-date">ملاحظة مكتوبة بتاريخ ${num(NOTES.updated || '')}</div></div>` : ''}
+    <div class="an-date">تحليل آلي من الأرقام، مو توصية مرخصة. القرار لك.</div>
+  </section>`;
+}
+
 /* ───────── الصفحات ───────── */
 function render() {
   renderStatus();
@@ -197,8 +247,13 @@ function vHome() {
   const tasi = Q('TASI'); const td = dayChg(tasi);
   if (!S.holdings.length && !S.watch.length) {
     return `${heroEmpty()}${tasiCard(tasi, td)}
-      <div class="empty"><b>ابدأ بإضافة أسهمك</b>من تبويب «أسهمي» أضف كل سهم تملكه بالكمية ومتوسط سعرك، وكل شي ثاني ينحسب لحاله.</div>
-      <button class="btn pri block" data-act="add-holding">أضف أول سهم</button>${foot()}`;
+      <form class="card form" id="vaultForm" autocomplete="off">
+        <h2 style="font-size:1.05rem">عندك رمز محفظة؟</h2>
+        <label class="field">اكتب الرمز وتنحمّل أسهمك وسيولتك<input id="f-vault" class="n" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="الرمز"></label>
+        <button class="btn pri block" type="submit">تحميل محفظتي</button>
+      </form>
+      <div class="empty"><b>أو ابدأ من الصفر</b>من تبويب «أسهمي» أضف كل سهم تملكه بالكمية ومتوسط سعرك.</div>
+      <button class="btn block" data-act="add-holding">أضف أول سهم</button>${foot()}`;
   }
   const segs = c.H.filter((h) => h.value > 0).sort((a, b) => b.value - a.value);
   return `
@@ -217,6 +272,11 @@ function vHome() {
     <div class="stat"><div class="k">توزيعات/سنة</div><div class="v num">${fmt(c.income, 0)}</div></div>
     <div class="stat"><div class="k">قيمة الأسهم</div><div class="v num">${fmt(c.stocks, 0)}</div></div>
   </div>
+  <section class="sec">
+    <div class="sec-h"><h2>رأي المحلل في أسهمك</h2><span class="meta">اضغط للتفاصيل</span></div>
+    <div class="list">${c.H.map((h) => { const a = analyze(h.code); return `<button class="row arow" data-act="detail" data-code="${esc(h.code)}">
+      <div style="min-width:0"><div class="nm">${esc(nameOf(h))}</div><div class="sub">${a ? a.why.split('.')[0] : ''}</div></div>${verdictChip(a)}</button>`; }).join('')}</div>
+  </section>
   ${tasiCard(tasi, td)}
   <section class="sec">
     <div class="sec-h"><h2>يحتاج انتباهك</h2><span class="meta">${num(A.length)} تنبيه</span></div>
@@ -269,7 +329,8 @@ function vHoldings() {
   <article class="card">
     <div class="card-h">
       <div><button class="nm" data-act="detail" data-code="${esc(h.code)}">${esc(nameOf(h))}</button>
-        <div class="sub"><span class="code">${esc(h.code)}</span> · ${num(h.qty)} سهم · ${num(h.weight.toFixed(0) + '%')} من المحفظة</div></div>
+        <div class="sub"><span class="code">${esc(h.code)}</span> · ${num(h.qty)} سهم · ${num(h.weight.toFixed(0) + '%')} من المحفظة</div>
+        <div style="margin-top:6px">${verdictChip(analyze(h.code))}</div></div>
       <div class="px"><div class="p">${fmt(h.p)}</div><span class="chg ${dir(h.dayPct)}">${pct(h.dayPct, 2)}</span></div>
     </div>
     ${h.q ? `<div data-act="detail" data-code="${esc(h.code)}">${spark(h.q.c, 600, 54).replace('<svg', '<svg class="spark-lg"')}</div>` : ''}
@@ -316,7 +377,8 @@ function vWatch() {
     return `<article class="card">
       <div class="card-h">
         <div><button class="nm" data-act="detail" data-code="${esc(w.code)}">${esc(nameOf(w))}</button>
-          <div class="sub"><span class="code">${esc(w.code)}</span>${w.note ? ' · ' + esc(w.note) : ''}</div></div>
+          <div class="sub"><span class="code">${esc(w.code)}</span>${w.note ? ' · ' + esc(w.note) : ''}</div>
+          <div style="margin-top:6px">${verdictChip(analyze(w.code))}</div></div>
         <div class="px"><div class="p">${fmt(q?.p)}</div><span class="chg ${dir(d?.pct)}">${pct(d?.pct, 2)}</span></div>
       </div>
       <div class="grid4">
@@ -377,6 +439,7 @@ function shDetail(st) {
     <div><h2>${esc(name)}</h2><div class="code">${isIdx ? 'المؤشر العام للسوق السعودي' : esc(code) + ' · ' + esc(q.s || '')}</div></div>
     <div><div class="p">${fmt(q.p)}</div><span class="chg ${dir(d?.pct)}">${num(sgn(d?.abs))} · ${pct(d?.pct, 2)}</span></div>
   </div>
+  ${analysisBlock(analyze(code))}
   <div class="chart">${bigChart(q, bars, levels)}
     <div class="ranges">${[[22, 'شهر'], [65, '٣ أشهر'], [130, '٦ أشهر']].map(([n, l]) => `<button class="chip" data-act="bars" data-n="${n}" aria-pressed="${bars === n}">${l}</button>`).join('')}</div>
   </div>
@@ -443,6 +506,8 @@ function shSettings(st) {
   <form class="form" id="cashForm"><label class="field">السيولة النقدية (ريال)<input id="f-cash" class="n" inputmode="decimal" value="${S.cash ?? ''}"></label>
     <button class="btn pri block" type="submit">حفظ السيولة</button></form>
   <div class="note"><b>إضافة التطبيق للشاشة الرئيسية</b><br>${ios ? 'في Safari: زر المشاركة (المربع والسهم) ← «إضافة إلى الشاشة الرئيسية».' : 'في Chrome: القائمة ⋮ ← «تثبيت التطبيق» أو «إضافة إلى الشاشة الرئيسية».'}</div>
+  <form class="form" id="vaultForm" autocomplete="off"><label class="field">تحميل محفظة برمز<input id="f-vault" class="n" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="الرمز"></label>
+    <button class="btn block" type="submit">تحميل (يستبدل بياناتك الحالية)</button></form>
   <div class="note"><b>نسخة احتياطية</b><br>بياناتك محفوظة في هذا الجهاز بس. انسخ النص وخزّنه في الملاحظات، أو استخدمه تنقل بياناتك لجهاز ثاني.</div>
   <label class="field">بياناتك<textarea id="f-backup" rows="3" readonly class="num" style="text-align:left">${esc(json)}</textarea></label>
   <button class="btn block" data-act="copy">نسخ</button>
@@ -516,6 +581,7 @@ document.addEventListener('input', (e) => {
 document.addEventListener('submit', (e) => {
   e.preventDefault();
   const g = (id) => { const el = $('#' + id); return el ? el.value.trim() : ''; };
+  if (e.target.id === 'vaultForm') { openVault(g('f-vault')); return; }
   if (e.target.id === 'cashForm') { const v = N(g('f-cash')); if (v != null) { S.cash = v; save(); render(); toast('انحفظت السيولة'); } return; }
   if (e.target.id !== 'recForm') return;
   const st = sheetState; const H = st.type === 'holding'; const list = H ? S.holdings : S.watch;
@@ -530,6 +596,19 @@ document.addEventListener('submit', (e) => {
   if (!st.id) list.push(rec);
   save(); closeSheet(); render(); toast('انحفظ');
 });
+
+async function openVault(code) {
+  if (!code) return toast('اكتب الرمز');
+  try {
+    const v = await (await fetch('data/vault.json?t=' + Date.now())).json();
+    const b = (x) => Uint8Array.from(atob(x), (c) => c.charCodeAt(0));
+    const base = await crypto.subtle.importKey('raw', new TextEncoder().encode(code.trim()), 'PBKDF2', false, ['deriveKey']);
+    const key = await crypto.subtle.deriveKey({ name: 'PBKDF2', salt: b(v.salt), iterations: v.iter, hash: 'SHA-256' }, base, { name: 'AES-GCM', length: 256 }, false, ['decrypt']);
+    const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: b(v.iv) }, key, b(v.ct));
+    const d = JSON.parse(new TextDecoder().decode(pt));
+    S = Object.assign(blank(), d); save(); render(); toast('انحمّلت محفظتك');
+  } catch { toast('الرمز غلط'); }
+}
 
 /* ───────── التثبيت ───────── */
 window.addEventListener('beforeinstallprompt', (e) => {
@@ -563,6 +642,7 @@ async function boot() {
   const h = location.hash.slice(1); if (['home', 'holdings', 'market', 'watch', 'learn'].includes(h)) view = h;
   const imp = readImportHash();
   try { TICK = await (await fetch('data/tickers.json')).json(); } catch { TICK = []; }
+  try { NOTES = await (await fetch('data/notes.json?t=' + Date.now())).json(); } catch { NOTES = {}; }
   await fetchMarket(false);
   if (imp) openSheet({ type: 'import', data: imp });
   iosHint();
