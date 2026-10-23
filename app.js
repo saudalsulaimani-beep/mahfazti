@@ -24,7 +24,7 @@ let M = null;              // market.json
 let TICK = [];             // data/tickers.json
 let NOTES = {};            // data/notes.json — ملاحظات المحلل المكتوبة
 let view = 'home';
-let mktSort = 'up';
+let mktSort = 'best';
 let mktQuery = '';
 let mktSector = '';
 let sheetState = null;
@@ -218,7 +218,51 @@ function analyze(code) {
     else if (score <= -2) { v = 'ابتعد حالياً'; tone = 'loss'; why = 'أغلب العوامل سلبية في الوقت الحالي.'; }
     else { v = 'راقب'; tone = 'warn'; why = 'مو واضح. انتظر نتائج أو إشارة أوضح.'; }
   }
-  return { F, score, v, tone, why, note, pos };
+  return { F, score, v, tone, why, note, pos, code };
+}
+/* مستويات الشراء: منطقة دخول، وقف، هدف — كلها من حركة السعر الفعلية
+   صاعد (فوق متوسط ٥٠): الدخول عند الرجوع لمتوسط ٢٠ يوم
+   هابط: الدخول قرب أدنى سعر بآخر ٢٠ جلسة (دعم) — ولا تلحق السهم */
+function tick(p) { return p < 10 ? 0.01 : p < 25 ? 0.02 : p < 50 ? 0.05 : p < 100 ? 0.1 : 0.2; }
+function rnd(v, up) { const t = tick(v); return +((up ? Math.ceil(v / t) : Math.floor(v / t)) * t).toFixed(2); }
+function levels(q) {
+  const c = q?.c; if (!c || c.length < 25 || !q.p) return null;
+  const p = q.p, l20 = Math.min(...c.slice(-20)), h20 = Math.max(...c.slice(-20)), m20 = sma(c, 20), m50 = sma(c, 50) ?? m20;
+  const up = p > m50;
+  let entry = up ? Math.min(p, Math.max(m20, l20)) : Math.min(p, l20 * 1.01);
+  entry = rnd(entry);
+  const stop = rnd(Math.min(l20, entry) * 0.97);
+  let target = Math.max(h20, m50);
+  if (q.h52 && target > q.h52) target = q.h52;
+  if (target < entry * 1.07) target = entry * 1.07;
+  target = rnd(target);
+  const rr = (target - entry) / Math.max(entry - stop, 0.01);
+  return { entry, stop, target, rr, up, near: p <= entry * 1.02, l20, m20, m50 };
+}
+function buyView(code) {
+  const q = Q(code); const a = analyze(code); if (!a) return null;
+  const own = S.holdings.find((h) => h.code === code);
+  const L = levels(q);
+  if (own) return { a, L, label: a.v, tone: a.tone, why: a.why, own: true };
+  const plus = a.F.filter((f) => f.s > 0).map((f) => f.t.replace(/<[^>]+>/g, '').split(':')[0]);
+  const minus = a.F.filter((f) => f.s < 0).map((f) => f.t.replace(/<[^>]+>/g, '').split(':')[0]);
+  let label, tone, why;
+  if (a.v === 'مرشح للشراء' && L && L.rr >= 1.2) {
+    tone = 'gain';
+    label = L.near ? 'كويس للشراء الحين' : 'كويس للشراء عند ' + fmt(L.entry);
+    why = `ليش: ${plus.join(' + ')}. ` + (L.near ? `السعر قريب من منطقة الدخول ${num(fmt(L.entry))}.` : `انتظر يرجع لـ ${num(fmt(L.entry))} بدل ما تلحقه.`);
+  } else if (a.v === 'ابتعد حالياً') {
+    tone = 'loss'; label = 'مو كويس حالياً'; why = `ليش: ${minus.join(' + ') || 'أغلب العوامل سلبية'}.`;
+  } else {
+    tone = 'warn'; label = 'راقب'; 
+    why = (a.v === 'مرشح للشراء' && L) ? 'الأرقام جيدة بس المكسب المتوقع قليل مقابل المخاطرة من السعر الحالي.' :
+      `${plus.length ? 'له: ' + plus.join(' + ') + '. ' : ''}${minus.length ? 'عليه: ' + minus.join(' + ') + '.' : ''}${a.F[0].na ? ' ما راجعت نتائجه.' : ''}`;
+  }
+  return { a, L, label, tone, why };
+}
+function lvlLine(L) {
+  if (!L) return '';
+  return `دخول ${num(fmt(L.entry))} · وقف ${num(fmt(L.stop))} · هدف ${num(fmt(L.target))}`;
 }
 function verdictChip(a) { return a ? `<span class="vchip ${a.tone}">${a.v}</span>` : ''; }
 function analysisBlock(a) {
@@ -227,6 +271,11 @@ function analysisBlock(a) {
     <div class="an-h"><span class="an-l">رأي المحلل</span>${verdictChip(a)}</div>
     <div class="an-why">${a.why}</div>
     <ul class="factors">${a.F.map((f) => `<li><span class="fs ${f.s > 0 ? 'up' : f.s < 0 ? 'down' : 'flat'}">${f.s > 0 ? '+' : f.s < 0 ? '−' : '•'}</span><b>${f.k}:</b> ${f.t}</li>`).join('')}</ul>
+    ${(() => { const b = buyView(a.code); const L = b?.L; if (!L) return '';
+      return b.own ? `<div class="lv-box"><b>وقف خسارة مقترح:</b> ${num(fmt(L.stop))} <span class="explain">(تحت أدنى سعر بآخر ٢٠ جلسة بـ ٣٪)</span></div>`
+        : `<div class="lv-box"><div><span class="vchip ${b.tone}">${b.label}</span></div>
+          <div class="lv-grid"><div><span>ادخل عند</span><b>${num(fmt(L.entry))}</b></div><div><span>وقف خسارة</span><b class="down-t">${num(fmt(L.stop))}</b></div><div><span>هدف أول</span><b class="up-t">${num(fmt(L.target))}</b></div></div>
+          <div class="explain">${b.why} المكسب المتوقع ${num(((L.target - L.entry) / L.entry * 100).toFixed(1) + '%')} مقابل مخاطرة ${num(((L.entry - L.stop) / L.entry * 100).toFixed(1) + '%')}.</div></div>`; })()}
     ${a.note ? `<div class="an-note">${esc(a.note.text)}<div class="an-date">ملاحظة مكتوبة بتاريخ ${num(NOTES.updated || '')}</div></div>` : ''}
     <div class="an-date">تحليل آلي من الأرقام، مو توصية مرخصة. القرار لك.</div>
   </section>`;
@@ -268,11 +317,7 @@ ${vaultCard()}
     <div class="stat"><div class="k">توزيعات/سنة</div><div class="v num">${fmt(c.income, 0)}</div></div>
     <div class="stat"><div class="k">قيمة الأسهم</div><div class="v num">${fmt(c.stocks, 0)}</div></div>
   </div>
-  <section class="sec">
-    <div class="sec-h"><h2>رأي المحلل في أسهمك</h2><span class="meta">اضغط للتفاصيل</span></div>
-    <div class="list">${c.H.map((h) => { const a = analyze(h.code); return `<button class="row arow" data-act="detail" data-code="${esc(h.code)}">
-      <div style="min-width:0"><div class="nm">${esc(nameOf(h))}</div><div class="sub">${a ? a.why.split(/\.(\s|$)/)[0] : ''}</div></div>${verdictChip(a)}</button>`; }).join('')}</div>
-  </section>
+  ${dailyPlan(c)}
   ${tasiCard(tasi, td)}
   <section class="sec">
     <div class="sec-h"><h2>يحتاج انتباهك</h2><span class="meta">${num(A.length)} تنبيه</span></div>
@@ -285,6 +330,42 @@ ${vaultCard()}
     <div class="list">${c.H.map((h) => row(h.code, nameOf(h), h.q, h.p)).join('')}</div>
   </section>
   ${foot()}`;
+}
+/* خطة اليوم: تنبني من جديد مع كل تحديث للأسعار */
+function dailyPlan(c) {
+  const all = TICK.map((t) => Q(t.code)).filter(Boolean);
+  const ups = all.filter((q) => (dayChg(q)?.pct ?? 0) > 0).length, downs = all.filter((q) => (dayChg(q)?.pct ?? 0) < 0).length;
+  const avg = all.length ? all.reduce((a, q) => a + (dayChg(q)?.pct ?? 0), 0) / all.length : 0;
+  const tasi = Q('TASI'); const td = dayChg(tasi);
+  const weak = downs > ups * 1.5, strong = ups > downs * 1.5;
+  const mood = weak ? { t: 'loss', s: 'السوق ضعيف', d: 'أغلب الأسهم نازلة. لا تستعجل الشراء، ادخل بالتدريج وخل جزء كبير من سيولتك كاش.' }
+    : strong ? { t: 'gain', s: 'السوق قوي', d: 'أغلب الأسهم طالعة. لا تلحق الأسهم اللي طارت، اشتر عند مناطق الدخول.' }
+    : { t: 'warn', s: 'السوق متوازن', d: 'ما فيه اتجاه واضح. اشتغل على الأسهم اللي أرقامها قوية بس.' };
+  const today = new Date(Date.now() + 3 * 3600e3);
+  const dayName = ['الأحد', 'الاثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت'][today.getUTCDay()];
+  const own = c.H.map((h) => {
+    const a = analyze(h.code); const L = levels(h.q); if (!a) return '';
+    let act;
+    if (a.v === 'بيع حسب خطتك') act = `بيع ${num(h.qty)} سهم. السعر ${num(fmt(h.p))} تحت وقفك ${num(fmt(h.stop))}.`;
+    else if (a.tone === 'loss') act = `فكّر بالبيع. ${L ? `إذا بتحتفظ، حط وقف عند ${num(fmt(h.stop ?? L.stop))}.` : ''}`;
+    else act = `احتفظ. وقف عند ${num(fmt(h.stop ?? L?.stop))}${h.target ? ` وهدف ${num(fmt(h.target))}` : L ? ` وهدف ${num(fmt(L.target))}` : ''}.`;
+    return `<button class="pl-row" data-act="detail" data-code="${esc(h.code)}"><span class="vchip ${a.tone}">${a.v}</span><div><b>${esc(nameOf(h))}</b><div class="whyline">${act}</div></div></button>`;
+  }).join('');
+  const pool = [...new Set([...S.watch.map((w) => w.code), ...TICK.map((t) => t.code)])].filter((code) => !S.holdings.some((h) => h.code === code));
+  const picks = pool.map((code) => buyView(code)).filter((b) => b && b.tone === 'gain')
+    .sort((x, y) => (y.a.score - x.a.score) || ((y.L?.near ? 1 : 0) - (x.L?.near ? 1 : 0)) || ((y.L?.rr || 0) - (x.L?.rr || 0))).slice(0, 4);
+  const budget = Math.min(S.cash * (weak ? 0.25 : 0.34), (c.total || S.cash) * 0.25);
+  const buys = picks.map((b) => { const n = Math.floor(budget / b.L.entry);
+    return `<button class="pl-row" data-act="detail" data-code="${esc(b.a.code)}"><span class="vchip gain">${b.L.near ? 'اشتر الحين' : 'اشتر عند ' + fmt(b.L.entry)}</span><div><b>${esc(Q(b.a.code)?.n || b.a.code)}</b><div class="whyline">${lvlLine(b.L)}${n ? ` · حوالي ${num(n)} سهم` : ''}</div><div class="whyline">${b.why}</div></div></button>`; }).join('');
+  return `<section class="plan">
+    <div class="pl-h"><h2>خطة اليوم</h2><span class="meta">${dayName} · تتحدث مع كل سعر جديد</span></div>
+    <div class="pl-mood ${mood.t}"><b>${mood.s}</b> · تاسي ${pct(td?.pct, 2)} · ${num(ups)} سهم طالع و${num(downs)} نازل<div class="whyline">${mood.d}</div></div>
+    ${NOTES.market ? `<div class="an-note">${esc(NOTES.market)}<div class="an-date">أخبار السوق · ${num(NOTES.updated || '')}</div></div>` : ''}
+    <h3 class="pl-sub">١. أسهمك</h3>${own || '<div class="whyline">ما عندك أسهم.</div>'}
+    <h3 class="pl-sub">٢. فرص الشراء</h3>${buys || '<div class="whyline">ما فيه فرصة قوية اليوم. خلك كاش، وهذا قرار بحد ذاته.</div>'}
+    <h3 class="pl-sub">٣. السيولة</h3><div class="whyline">عندك ${num(fmt(S.cash, 0))} ريال. القاعدة: لا تحط أكثر من ${num(fmt(budget, 0))} ريال في سهم واحد${weak ? '، وخل نصف سيولتك على الأقل كاش لين يهدأ السوق' : ''}.</div>
+    <div class="an-date">مبنية آلياً من الأرقام وملاحظات الأخبار، مو توصية مرخصة. القرار لك.</div>
+  </section>`;
 }
 function vaultCard() {
   return `<form class="card form" id="vaultForm" autocomplete="off">
@@ -305,10 +386,10 @@ function tasiCard(t, td) {
     <div style="text-align:left"><div class="px">${num(fmt(t.p))}</div><span class="chg ${dir(td?.pct)}">${pct(td?.pct, 2)}</span></div>
   </button>`;
 }
-function row(code, name, q, p) {
+function row(code, name, q, p, extra = '') {
   const d = dayChg(q);
   return `<button class="row" data-act="detail" data-code="${esc(code)}">
-    <div style="min-width:0"><div class="nm">${esc(name)}</div><div class="sub"><span class="code">${esc(code)}</span>${q?.stale ? '<span class="stale">قديم</span>' : ''}</div></div>
+    <div style="min-width:0"><div class="nm">${esc(name)}</div><div class="sub"><span class="code">${esc(code)}</span>${q?.stale ? '<span class="stale">قديم</span>' : ''}</div>${extra}</div>
     ${spark(q?.c)}
     <div style="text-align:left"><div class="px">${fmt(p ?? q?.p)}</div><span class="chg ${dir(d?.pct)}">${pct(d?.pct, 2)}</span></div>
   </button>`;
@@ -354,19 +435,23 @@ function vMarket() {
   let L = TICK.map((t) => ({ ...t, q: Q(t.code) })).filter((t) => t.q);
   if (mktSector) L = L.filter((t) => t.sector === mktSector);
   if (mktQuery) { const s = mktQuery.trim(); L = L.filter((t) => t.name.includes(s) || t.code.startsWith(s)); }
-  const key = { up: (t) => -(dayChg(t.q)?.pct ?? -999), down: (t) => (dayChg(t.q)?.pct ?? 999), yld: (t) => -((t.q.div || 0) / t.q.p),
+  const BV = {}; L.forEach((t) => (BV[t.code] = buyView(t.code)));
+  const rank = (t) => { const b = BV[t.code]; if (!b) return 99; return ({ gain: 0, warn: 1, loss: 2 }[b.tone] ?? 1) * 10 - (b.a.score || 0) - (b.L?.near ? 0.5 : 0); };
+  const key = { best: rank, up: (t) => -(dayChg(t.q)?.pct ?? -999), down: (t) => (dayChg(t.q)?.pct ?? 999), yld: (t) => -((t.q.div || 0) / t.q.p),
     low: (t) => (t.q.l52 ? (t.q.p - t.q.l52) / t.q.l52 : 9), m3: (t) => -(perf(t.q, 63) ?? -999), az: null }[mktSort];
   if (key) L.sort((a, b) => key(a) - key(b)); else L.sort((a, b) => a.name.localeCompare(b.name, 'ar'));
   const extra = (t) => mktSort === 'yld' ? `<span class="code">عائد ${num(((t.q.div || 0) / t.q.p * 100).toFixed(1) + '%')}</span>`
     : mktSort === 'low' ? `<span class="code">فوق قاع السنة ${num(pct((t.q.p - t.q.l52) / t.q.l52 * 100))}</span>`
     : mktSort === 'm3' ? `<span class="code">٣ أشهر ${num(pct(perf(t.q, 63)))}</span>` : '';
-  const chips = [['up', 'الأكثر ارتفاعاً'], ['down', 'الأكثر انخفاضاً'], ['yld', 'أعلى توزيعات'], ['low', 'قرب قاع السنة'], ['m3', 'الأقوى ٣ أشهر'], ['az', 'أ-ي']];
+  const chips = [['best', 'الأفضل للشراء'], ['up', 'الأكثر ارتفاعاً'], ['down', 'الأكثر انخفاضاً'], ['yld', 'أعلى توزيعات'], ['low', 'قرب قاع السنة'], ['m3', 'الأقوى ٣ أشهر'], ['az', 'أ-ي']];
   return `<div class="sec-h"><h2>السوق</h2><span class="meta">${num(L.length)} سهم · ${ago(M?.marketTime)}</span></div>
   <label class="search"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
     <input id="mktSearch" type="search" placeholder="ابحث باسم الشركة أو الرمز" value="${esc(mktQuery)}" autocomplete="off"></label>
   <div class="chips">${chips.map(([k, l]) => `<button class="chip" data-act="sort" data-k="${k}" aria-pressed="${mktSort === k}">${l}</button>`).join('')}</div>
   <div class="chips"><button class="chip" data-act="sector" data-k="" aria-pressed="${!mktSector}">كل القطاعات</button>${sectors.map((s) => `<button class="chip" data-act="sector" data-k="${esc(s)}" aria-pressed="${mktSector === s}">${esc(s)}</button>`).join('')}</div>
-  <div class="list">${L.slice(0, 150).map((t) => row(t.code, t.name, t.q).replace('</div></div>', `${extra(t)}</div></div>`)).join('') || '<div class="calm">ما فيه نتائج</div>'}</div>
+  <div class="list">${L.slice(0, 150).map((t) => { const b = BV[t.code];
+    const line = b ? `<div class="buyline"><span class="vchip ${b.tone}">${b.own ? 'تملكه: ' + b.label : b.label}</span>${!b.own && b.L && b.tone !== 'loss' ? `<span class="code">${lvlLine(b.L)}</span>` : ''}</div><div class="whyline">${b.why}</div>` : '';
+    return row(t.code, t.name, t.q, null, line).replace('</div></div>', `${extra(t)}</div></div>`); }).join('') || '<div class="calm">ما فيه نتائج</div>'}</div>
   <div class="note">"قرب قاع السنة" و"أعلى توزيعات" فرز بالأرقام بس، مو توصية. السهم ممكن يكون رخيص لأن الشركة فيها مشكلة حقيقية، فاقرأ عنها قبل أي قرار.</div>${foot()}`;
 }
 
@@ -381,15 +466,18 @@ function vWatch() {
       <div class="card-h">
         <div><button class="nm" data-act="detail" data-code="${esc(w.code)}">${esc(nameOf(w))}</button>
           <div class="sub"><span class="code">${esc(w.code)}</span>${w.note ? ' · ' + esc(w.note) : ''}</div>
-          <div style="margin-top:6px">${verdictChip(analyze(w.code))}</div></div>
+</div>
         <div class="px"><div class="p">${fmt(q?.p)}</div><span class="chg ${dir(d?.pct)}">${pct(d?.pct, 2)}</span></div>
       </div>
-      <div class="grid4">
-        <div class="cell"><div class="k">أشتري تحت</div><div class="v">${fmt(w.buyBelow)}</div></div>
-        <div class="cell"><div class="k">باقي للسعر</div><div class="v ${w.gap != null && w.gap <= 0 ? 'up-t' : ''}">${w.gap == null ? '—' : w.gap <= 0 ? 'وصل ✓' : pct(-w.gap)}</div></div>
-        <div class="cell"><div class="k">عائد التوزيعات</div><div class="v">${yl != null ? yl.toFixed(1) + '%' : '—'}</div></div>
-        <div class="cell"><div class="k">سيولتك تشتري</div><div class="v">${can ?? '—'}</div></div>
-      </div>
+      ${(() => { const b = buyView(w.code); if (!b) return ''; const L = b.L; const n = L ? Math.floor(Math.min(S.cash * 0.34, (calc().total || S.cash) * 0.25) / L.entry) : null;
+        return `<div class="buybox ${b.tone}"><div class="buyline"><span class="vchip ${b.tone}">${b.label}</span></div><div class="whyline">${b.why}</div>
+        ${L ? `<div class="grid4">
+          <div class="cell"><div class="k">ادخل عند</div><div class="v">${fmt(L.entry)}</div></div>
+          <div class="cell"><div class="k">وقف خسارة</div><div class="v down-t">${fmt(L.stop)}</div></div>
+          <div class="cell"><div class="k">هدف أول</div><div class="v up-t">${fmt(L.target)}</div></div>
+          <div class="cell"><div class="k">عائد التوزيعات</div><div class="v">${yl != null ? yl.toFixed(1) + '%' : '—'}</div></div>
+        </div>
+        ${b.tone !== 'loss' && n ? `<div class="explain">لو دخلت: حوالي ${num(n)} سهم (${num(fmt(n * L.entry, 0))} ريال، ثلث سيولتك كحد أعلى). ${w.buyBelow != null ? `سعرك أنت: ${num(fmt(w.buyBelow))}${w.gap <= 0 ? ' ✓ وصل' : ''}` : ''}</div>` : ''}` : ''}</div>`; })()}
       <div class="actions"><button class="btn" data-act="edit-watch" data-id="${w.id}">تعديل</button></div>
     </article>`; }).join('')}
   <button class="add-fab" data-act="add-watch">+ أضف سهم للمراقبة</button>${foot()}`;
@@ -403,6 +491,7 @@ const LESSONS = [
   ['ليش ما أحط فلوسي في سهم واحد؟', 'الخبر السيء يجي فجأة. لو سهم واحد نص محفظتك، الضربة تجي على نص فلوسك.', 'توزيعها على ٤ أو ٥ شركات في قطاعات مختلفة (بنوك، أغذية، طاقة، اتصالات) يخفف أثر أي خبر.'],
   ['"متى يرجع لسعري؟" سؤال غلط', 'السوق ما يدري بكم اشتريت، والسهم الخسران ما عليه يرجع لسعرك.', 'السؤال الصحيح: لو معي قيمته كاش اليوم، بشتريه؟ إذا لا، فكّر وين الفلوس تشتغل أحسن.'],
   ['وش هو الخط الذهبي المتقطع في الرسم؟', 'متوسط سعر آخر ٥٠ جلسة. لما السعر فوقه، الاتجاه العام صاعد. لما يكون تحته، هابط.', 'يعطيك صورة عامة بس. ما يعرف الأخبار ولا نتائج الشركة، وأي تطبيق يعطيك "ثقة ٨٠٪" منه يعطيك رقم مخترع.'],
+  ['كيف التطبيق يحسب "ادخل عند" والوقف والهدف؟', 'إذا السهم صاعد (فوق متوسط ٥٠ يوم): سعر الدخول عند رجوعه لمتوسط آخر ٢٠ يوم، بدل ما تلحقه وهو طاير. إذا هابط: الدخول قرب أدنى سعر بآخر ٢٠ جلسة (الدعم). الوقف تحت أدنى سعر بآخر ٢٠ جلسة بـ ٣٪. الهدف أعلى سعر بآخر ٢٠ جلسة أو متوسط ٥٠ يوم، وأقل شي ٧٪ فوق سعر الدخول.', '"كويس للشراء" يطلع بس لما الأرباح والاتجاه والتوزيعات إيجابية، والمكسب المتوقع أكبر من المخاطرة بـ ١.٢ مرة على الأقل.'],
   ['RSI وش يعني؟', 'مقياس من ٠ إلى ١٠٠ لسرعة حركة السعر في آخر ١٤ جلسة. فوق ٧٠: صعد بسرعة كبيرة. تحت ٣٠: نزل بسرعة كبيرة.', 'مو إشارة شراء أو بيع لحاله. سهم ممكن يظل فوق ٧٠ أسابيع وهو يصعد.'],
 ];
 function vLearn() {
@@ -649,7 +738,7 @@ async function boot() {
   await fetchMarket(false);
   if (imp) openSheet({ type: 'import', data: imp });
   iosHint();
-  setInterval(() => { if (document.visibilityState === 'visible' && marketOpen()) fetchMarket(false); }, 120000);
+  setInterval(() => { if (document.visibilityState === 'visible' && marketOpen()) fetchMarket(false); }, 60000);
   setInterval(renderStatus, 30000);
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && Date.now() - lastFetch > 60000) fetchMarket(false); });
   if ('serviceWorker' in navigator) {
