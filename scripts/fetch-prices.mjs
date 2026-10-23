@@ -12,8 +12,8 @@ const ryDay = (sec) => new Date((sec + 3 * 3600) * 1000).toISOString().slice(0, 
 let previous = { quotes: {} };
 try { previous = JSON.parse(await fs.readFile(OUT, 'utf8')); } catch { /* أول تشغيل */ }
 
-async function chart(sym) {
-  const q = `range=1y&interval=1d&events=div&includePrePost=false`;
+async function chart(sym, range = '1y') {
+  const q = `range=${range}&interval=1d&events=div&includePrePost=false`;
   for (const host of ['query1', 'query2']) {
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
@@ -45,7 +45,7 @@ function parse(res) {
   const last = rows[rows.length - 1];
   // إذا شمعة اليوم موجودة، الإغلاق السابق هو اللي قبلها
   const todayBar = ryDay(last.t) === ryDay(m.regularMarketTime);
-  const pc = todayBar ? rows[rows.length - 2]?.c : last.c;
+  const pc = rows.length > 1 ? (todayBar ? rows[rows.length - 2]?.c : last.c) : (m.previousClose ?? m.chartPreviousClose);
   const closes = rows.map((r) => r.c);
   const highs = rows.map((r) => r.h).filter((x) => x != null);
   const lows = rows.map((r) => r.l).filter((x) => x != null);
@@ -80,7 +80,13 @@ let idx = 0;
 async function worker() {
   while (idx < list.length) {
     const t = list[idx++];
-    const res = await chart(t.sym);
+    let res = await chart(t.sym);
+    // بعض المؤشرات ترجع شمعة وحدة مع مدى السنة، فنجرب مدى أقصر
+    for (const r of ['6mo', '3mo', '1mo']) {
+      if (!res || (res.timestamp || []).length >= 20) break;
+      const alt = await chart(t.sym, r);
+      if (alt && (alt.timestamp || []).length > (res.timestamp || []).length) res = alt;
+    }
     const parsed = res ? parse(res) : null;
     if (parsed) { quotes[t.code] = { n: t.name, s: t.sector, ...parsed }; ok++; }
     else if (previous.quotes?.[t.code]) { quotes[t.code] = { ...previous.quotes[t.code], n: t.name, s: t.sector, stale: true }; kept++; failed.push(t.code); }
