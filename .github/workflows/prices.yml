@@ -1,0 +1,59 @@
+name: تحديث الأسعار ونشر الموقع
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+  schedule:
+    # وقت تداول: الأحد-الخميس 10:00-15:10 بتوقيت الرياض (07:00-12:10 UTC) كل 5 دقائق
+    - cron: "*/5 7-11 * * 0-4"
+    - cron: "0,5,10,15,20 12 * * 0-4"
+    # بعد الإغلاق: إغلاق رسمي
+    - cron: "40 12 * * 0-4"
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: آخر نسخة منشورة من الأسعار (احتياط لو فشل سهم)
+        run: curl -fsSL "https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/data/market.json" -o data/market.json || echo "لا توجد نسخة سابقة"
+
+      - name: جلب الأسعار
+        run: node scripts/fetch-prices.mjs
+
+      - name: نبضة أسبوعية حتى لا يوقف GitHub الجدولة
+        if: github.event_name == 'schedule' && github.event.schedule == '40 12 * * 0-4'
+        run: |
+          if [ "$(date -u +%u)" = "4" ]; then
+            date -u +%F > data/heartbeat.txt
+            git config user.name "mahfazti-bot"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add data/heartbeat.txt
+            git commit -m "heartbeat" && git push || true
+          fi
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: .
+      - id: deploy
+        uses: actions/deploy-pages@v4
