@@ -275,7 +275,7 @@ function vHome() {
   <section class="sec">
     <div class="sec-h"><h2>رأي المحلل في أسهمك</h2><span class="meta">اضغط للتفاصيل</span></div>
     <div class="list">${c.H.map((h) => { const a = analyze(h.code); return `<button class="row arow" data-act="detail" data-code="${esc(h.code)}">
-      <div style="min-width:0"><div class="nm">${esc(nameOf(h))}</div><div class="sub">${a ? a.why.split('.')[0] : ''}</div></div>${verdictChip(a)}</button>`; }).join('')}</div>
+      <div style="min-width:0"><div class="nm">${esc(nameOf(h))}</div><div class="sub">${a ? a.why.split(/\.(\s|$)/)[0] : ''}</div></div>${verdictChip(a)}</button>`; }).join('')}</div>
   </section>
   ${tasiCard(tasi, td)}
   <section class="sec">
