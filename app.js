@@ -247,11 +247,7 @@ function vHome() {
   const tasi = Q('TASI'); const td = dayChg(tasi);
   if (!S.holdings.length && !S.watch.length) {
     return `${heroEmpty()}${tasiCard(tasi, td)}
-      <form class="card form" id="vaultForm" autocomplete="off">
-        <h2 style="font-size:1.05rem">عندك رمز محفظة؟</h2>
-        <label class="field">اكتب الرمز وتنحمّل أسهمك وسيولتك<input id="f-vault" class="n" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="الرمز"></label>
-        <button class="btn pri block" type="submit">تحميل محفظتي</button>
-      </form>
+${vaultCard()}
       <div class="empty"><b>أو ابدأ من الصفر</b>من تبويب «أسهمي» أضف كل سهم تملكه بالكمية ومتوسط سعرك.</div>
       <button class="btn block" data-act="add-holding">أضف أول سهم</button>${foot()}`;
   }
@@ -290,6 +286,13 @@ function vHome() {
   </section>
   ${foot()}`;
 }
+function vaultCard() {
+  return `<form class="card form" id="vaultForm" autocomplete="off">
+    <h2 style="font-size:1.05rem">عندك رمز محفظة؟</h2>
+    <label class="field">اكتب الرمز وتنحمّل أسهمك وسيولتك<input id="f-vault" class="n" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="الرمز"></label>
+    <button class="btn pri block" type="submit">تحميل محفظتي</button>
+  </form>`;
+}
 function heroEmpty() {
   return `<section class="hero"><div class="lbl">إجمالي المحفظة</div><div class="total">${fmt(S.cash)} <span class="cur">ريال</span></div>
     <div class="hero-row"><span class="hchip">نقد فقط</span></div></section>`;
@@ -324,7 +327,7 @@ function levelBar(h) {
 function vHoldings() {
   const c = calc();
   return `<div class="sec-h"><h2>أسهمي</h2><span class="meta">${num(c.H.length)} سهم · ${num(fmt(c.stocks, 0))} ريال</span></div>
-  ${c.H.length ? '' : `<div class="empty"><b>ما أضفت أسهم</b>أضف السهم بالكمية ومتوسط سعرك من تطبيق وسيطك.</div>`}
+  ${c.H.length ? '' : `${vaultCard()}<div class="empty"><b>أو أضفها بنفسك</b>أضف السهم بالكمية ومتوسط سعرك من تطبيق وسيطك.</div>`}
   ${c.H.sort((a, b) => b.value - a.value).map((h) => `
   <article class="card">
     <div class="card-h">
@@ -371,7 +374,7 @@ function vWatch() {
   const W = S.watch.map((w) => ({ ...w, q: Q(w.code) })).map((w) => ({ ...w, gap: w.q && w.buyBelow != null ? (w.q.p - w.buyBelow) / w.buyBelow * 100 : null }))
     .sort((a, b) => (a.gap ?? 999) - (b.gap ?? 999));
   return `<div class="sec-h"><h2>المراقبة</h2><span class="meta">مرتبة: الأقرب لسعرك فوق</span></div>
-  ${W.length ? '' : `<div class="empty"><b>قائمتك فاضية</b>أضف سهم تفكر فيه، وحدد السعر اللي يناسبك تشتري عنده.</div>`}
+  ${W.length ? '' : `${S.holdings.length ? '' : vaultCard()}<div class="empty"><b>قائمتك فاضية</b>أضف سهم تفكر فيه، وحدد السعر اللي يناسبك تشتري عنده.</div>`}
   ${W.map((w) => {
     const q = w.q; const d = dayChg(q); const yl = q?.div && q.p ? q.div / q.p * 100 : null; const can = q?.p ? Math.floor((S.cash || 0) / q.p) : null;
     return `<article class="card">
