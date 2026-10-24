@@ -40,6 +40,13 @@ jobs:
       - name: جلب الأسعار
         run: node scripts/fetch-prices.mjs
 
+      - name: آخر نسخة من البيانات المالية
+        run: curl -fsSL "https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/data/fundamentals.json" -o data/fundamentals.json || echo "لا توجد نسخة سابقة"
+
+      - name: البيانات المالية (مرة يومياً بعد الإغلاق، ومع كل نشر)
+        if: github.event_name != 'schedule' || github.event.schedule == '40 12 * * 0-4'
+        run: node scripts/fetch-fundamentals.mjs
+
       - name: نبضة أسبوعية حتى لا يوقف GitHub الجدولة
         if: github.event_name == 'schedule' && github.event.schedule == '40 12 * * 0-4'
         run: |

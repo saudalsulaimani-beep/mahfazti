@@ -54,7 +54,7 @@ function parse(res) {
     .filter((d) => d.date >= yearAgo)
     .sort((a, b) => a.date - b.date)
     .map((d) => ({ a: r2(d.amount), d: ryDay(d.date) }));
-  const tail = rows.slice(-130);
+  const tail = rows.slice(-250);
   return {
     p: r2(p),
     pc: r2(pc),
