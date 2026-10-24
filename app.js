@@ -58,10 +58,47 @@ async function fetchMarket(manual) {
     const r = await fetch('data/market.json?t=' + Date.now(), { cache: 'no-store' });
     if (!r.ok) throw new Error(r.status);
     M = await r.json(); lastFetch = Date.now();
+    buildMarketTrend();
     if (manual) toast('الأسعار محدّثة');
   } catch {
     if (manual) toast('ما قدرت أجيب الأسعار. تأكد من النت');
   } finally { btn.classList.remove('spinning'); render(); }
+}
+
+/* Yahoo ما يعطي تاريخ تاسي، فنرسم اتجاه السوق من متوسط حركة كل الأسهم (وزن متساوي) ونطابقه مع آخر قيمة لتاسي */
+function buildMarketTrend() {
+  const t = M?.quotes?.TASI; if (!t || (t.c && t.c.length >= 20)) return;
+  const series = Object.entries(M.quotes).filter(([k, q]) => k !== 'TASI' && q.c && q.c.length >= 60).map(([, q]) => q.c);
+  if (series.length < 10) return;
+  const n = Math.min(130, ...series.map((c) => c.length));
+  const idx = [];
+  for (let i = 0; i < n; i++) {
+    let sum = 0; for (const c of series) { const a = c.slice(-n); sum += a[i] / a[n - 1]; }
+    idx.push(sum / series.length);
+  }
+  const scale = t.p / idx[n - 1];
+  t.c = idx.map((v) => +(v * scale).toFixed(2)); t.synthetic = true;
+}
+
+/* سجل قيمة المحفظة يومياً (على جهازك) */
+const HKEY = 'mahfazti.hist';
+function histLoad() { try { return JSON.parse(localStorage.getItem(HKEY)) || []; } catch { return []; } }
+function histRecord(c) {
+  if (!M?.marketTime || !S.holdings.length) return;
+  const d = new Date((M.marketTime + 3 * 3600) * 1000).toISOString().slice(0, 10);
+  const H = histLoad(); const last = H[H.length - 1];
+  const rec = { d, v: +c.total.toFixed(2), s: +c.stocks.toFixed(2), k: +c.cost.toFixed(2) };
+  if (last && last.d === d) H[H.length - 1] = rec; else H.push(rec);
+  try { localStorage.setItem(HKEY, JSON.stringify(H.slice(-400))); } catch {}
+}
+function histCard() {
+  const H = histLoad();
+  if (H.length < 2) return `<div class="note">📈 من اليوم يبدأ التطبيق يسجل قيمة محفظتك كل يوم تداول، وبعد كم يوم يطلع لك رسم أدائك هنا.</div>`;
+  const vals = H.map((h) => h.v); const first = vals[0], last = vals[vals.length - 1];
+  const ch = (last - first) / first * 100;
+  return `<section class="card"><div class="sec-h"><h2>أداء محفظتك</h2><span class="meta">من ${num(H[0].d)}</span></div>
+    ${spark(vals, 600, 60, last >= first ? 'var(--gain)' : 'var(--loss)').replace('<svg', '<svg class="spark-lg"')}
+    <div class="whyline">من ${num(fmt(first))} إلى ${num(fmt(last))} ريال (${pct(ch)}). يشمل السيولة، فأي إيداع أو سحب يبان في الرسم.</div></section>`;
 }
 
 /* ───────── وقت السوق (الرياض) ───────── */
@@ -95,7 +132,8 @@ function spark(c, w = 72, h = 28, color) {
 function bigChart(q, bars, levels = []) {
   const all = q.c || []; const c = all.slice(-bars);
   if (c.length < 2) return '<div class="explain">ما فيه بيانات كافية للرسم.</div>';
-  const W = 600, H = 220, padT = 16, padB = 24, padL = 46, padR = 8;
+  const W = 600, H = 220, padT = 16, padB = 24, padR = 8;
+  const padL = Math.max(46, fmt(Math.max(...all)).length * 7 + 12);
   const ma = all.map((_, i) => (i >= 49 ? all.slice(i - 49, i + 1).reduce((a, b) => a + b, 0) / 50 : null)).slice(-bars);
   const vals = [...c, ...ma.filter((x) => x != null), ...levels.map((l) => l.v)];
   let lo = Math.min(...vals), hi = Math.max(...vals); const pad = (hi - lo) * 0.08 || 1; lo -= pad; hi += pad;
@@ -300,6 +338,7 @@ ${vaultCard()}
       <div class="empty"><b>أو ابدأ من الصفر</b>من تبويب «أسهمي» أضف كل سهم تملكه بالكمية ومتوسط سعرك.</div>
       <button class="btn block" data-act="add-holding">أضف أول سهم</button>${foot()}`;
   }
+  histRecord(c);
   const segs = c.H.filter((h) => h.value > 0).sort((a, b) => b.value - a.value);
   return `
   <section class="hero">
@@ -318,6 +357,7 @@ ${vaultCard()}
     <div class="stat"><div class="k">قيمة الأسهم</div><div class="v num">${fmt(c.stocks, 0)}</div></div>
   </div>
   ${dailyPlan(c)}
+  ${histCard()}
   ${tasiCard(tasi, td)}
   <section class="sec">
     <div class="sec-h"><h2>يحتاج انتباهك</h2><span class="meta">${num(A.length)} تنبيه</span></div>
@@ -381,7 +421,7 @@ function heroEmpty() {
 function tasiCard(t, td) {
   if (!t) return '';
   return `<button class="index" data-act="detail" data-code="TASI">
-    <div><div class="nm">تاسي</div><div class="code">المؤشر العام</div></div>
+    <div><div class="nm">تاسي</div><div class="code">${t.synthetic ? 'الاتجاه تقريبي' : 'المؤشر العام'}</div></div>
     ${spark(t.c, 160, 36)}
     <div style="text-align:left"><div class="px">${num(fmt(t.p))}</div><span class="chg ${dir(td?.pct)}">${pct(td?.pct, 2)}</span></div>
   </button>`;
@@ -444,7 +484,11 @@ function vMarket() {
     : mktSort === 'low' ? `<span class="code">فوق قاع السنة ${num(pct((t.q.p - t.q.l52) / t.q.l52 * 100))}</span>`
     : mktSort === 'm3' ? `<span class="code">٣ أشهر ${num(pct(perf(t.q, 63)))}</span>` : '';
   const chips = [['best', 'الأفضل للشراء'], ['up', 'الأكثر ارتفاعاً'], ['down', 'الأكثر انخفاضاً'], ['yld', 'أعلى توزيعات'], ['low', 'قرب قاع السنة'], ['m3', 'الأقوى ٣ أشهر'], ['az', 'أ-ي']];
+  const secStats = sectors.map((sec) => { const qs = TICK.filter((t) => t.sector === sec).map((t) => Q(t.code)).filter(Boolean);
+    const ch = qs.length ? qs.reduce((a, q) => a + (dayChg(q)?.pct ?? 0), 0) / qs.length : 0; return { sec, ch, n: qs.length }; });
+  const heat = (ch) => { const a = Math.min(Math.abs(ch) / 3, 1) * 0.85 + 0.15; return ch >= 0 ? `background:color-mix(in srgb,var(--gain) ${Math.round(a * 60)}%,var(--surface))` : `background:color-mix(in srgb,var(--loss) ${Math.round(a * 60)}%,var(--surface))`; };
   return `<div class="sec-h"><h2>السوق</h2><span class="meta">${num(L.length)} سهم · ${ago(M?.marketTime)}</span></div>
+  <div class="heat">${secStats.map((x) => `<button class="tile" data-act="sector" data-k="${esc(x.sec)}" style="${heat(x.ch)}" aria-pressed="${mktSector === x.sec}"><span>${esc(x.sec)}</span><b>${pct(x.ch, 2)}</b><small>${num(x.n)} سهم</small></button>`).join('')}</div>
   <label class="search"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
     <input id="mktSearch" type="search" placeholder="ابحث باسم الشركة أو الرمز" value="${esc(mktQuery)}" autocomplete="off"></label>
   <div class="chips">${chips.map(([k, l]) => `<button class="chip" data-act="sort" data-k="${k}" aria-pressed="${mktSort === k}">${l}</button>`).join('')}</div>
@@ -550,10 +594,12 @@ function shDetail(st) {
     ${r != null ? `• RSI = ${num(r.toFixed(0))}: ${r >= 70 ? 'صعد بسرعة كبيرة مؤخراً.' : r <= 30 ? 'نزل بسرعة كبيرة مؤخراً.' : 'حركة عادية.'} هذا وصف للي صار، مو توقع.<br>` : ''}
     ${lastDiv ? `• آخر توزيع: ${num(fmt(lastDiv.a))} ريال بتاريخ ${num(lastDiv.d)}.` : ''}
     ${q.stale ? '<br><span class="stale">• تعذّر تحديث هذا السهم في آخر دورة، والسعر من تحديث سابق.</span>' : ''}
+    ${q.synthetic ? '<br>• رسم تاسي تقريبي: محسوب من متوسط حركة ١٣٣ سهم، لأن مصدر الأسعار ما يعطي تاريخ المؤشر. القيمة الأخيرة والتغير اليومي حقيقية.' : ''}
   </div>
   ${owned ? (() => { const h = calc().H.find((x) => x.id === owned.id); return `<div class="kv">
       <div class="cell"><div class="k">تملك</div><div class="v">${num(owned.qty)} سهم بمتوسط ${fmt(owned.cost)}</div></div>
       <div class="cell"><div class="k">ربحك/خسارتك</div><div class="v ${dir(h.pnl)}-t">${sgn(h.pnl)} (${pct(h.pnlPct)})</div></div></div>`; })() : ''}
+  ${isIdx ? '' : calcBox(q, owned)}
   ${isIdx ? '' : `<div class="two">
     ${owned ? `<button class="btn pri" data-act="edit-holding" data-id="${owned.id}">تعديل في أسهمي</button>` : `<button class="btn pri" data-act="add-holding" data-code="${esc(code)}">أضفه لأسهمي</button>`}
     ${watched ? `<button class="btn" data-act="edit-watch" data-id="${watched.id}">تعديل المراقبة</button>` : `<button class="btn" data-act="add-watch" data-code="${esc(code)}">راقبه</button>`}
@@ -561,6 +607,30 @@ function shDetail(st) {
   <a class="btn ghost block" style="text-align:center;text-decoration:none" href="https://www.saudiexchange.sa/wps/portal/saudiexchange/hidden/company-profile-main/?companySymbol=${encodeURIComponent(code)}" target="_blank" rel="noopener">صفحة الشركة في موقع تداول ↗</a>`;
 }
 
+/* حاسبة الشراء: العمولة تقريبية (٠.١٥٥٪ + ضريبة ١٥٪ عليها) */
+const FEE = 0.00155 * 1.15;
+function calcBox(q, owned) {
+  const L = levels(q); const price = L?.near || !L ? q.p : L.entry;
+  const def = L ? Math.max(1, Math.floor(Math.min(S.cash * 0.34, (calc().total || S.cash) * 0.25) / price)) : 10;
+  return `<section class="card calc" data-price="${price}" data-stop="${L?.stop ?? ''}" data-target="${L?.target ?? ''}" data-div="${q.div || 0}">
+    <div class="sec-h"><h2>حاسبة الشراء</h2><span class="meta">بسعر ${num(fmt(price))}</span></div>
+    <label class="field">كم سهم؟<input id="calcQty" class="n" inputmode="numeric" value="${def}"></label>
+    <div id="calcOut">${calcOut(def, price, L, q.div || 0)}</div>
+  </section>`;
+}
+function calcOut(n, price, L, div) {
+  if (!n || n <= 0) return '';
+  const cost = n * price, fee = cost * FEE, total = cost + fee;
+  const left = (S.cash || 0) - total;
+  return `<div class="kv">
+    <div class="cell"><div class="k">المبلغ مع العمولة</div><div class="v">${fmt(total)}</div></div>
+    <div class="cell"><div class="k">العمولة تقريباً</div><div class="v">${fmt(fee)}</div></div>
+    ${L ? `<div class="cell"><div class="k">لو ضرب الوقف ${fmt(L.stop)}</div><div class="v down-t">${sgn(n * L.stop * (1 - FEE) - total)}</div></div>
+    <div class="cell"><div class="k">لو وصل الهدف ${fmt(L.target)}</div><div class="v up-t">${sgn(n * L.target * (1 - FEE) - total)}</div></div>` : ''}
+    <div class="cell"><div class="k">توزيعات بالسنة</div><div class="v">${fmt(n * div)}</div></div>
+    <div class="cell"><div class="k">يبقى من سيولتك</div><div class="v ${left < 0 ? 'down-t' : ''}">${fmt(left)}</div></div>
+  </div>${left < 0 ? '<div class="whyline down-t">المبلغ أكبر من سيولتك.</div>' : ''}`;
+}
 function shForm(st) {
   const H = st.type === 'holding';
   const rec = st.id ? (H ? S.holdings : S.watch).find((x) => x.id === st.id) : null;
@@ -583,6 +653,7 @@ function shForm(st) {
         <div class="two"><label class="field">وقف الخسارة <small>اختياري</small><input id="f-stop" class="n" inputmode="decimal" value="${v('stop')}"></label>
         <label class="field">الهدف <small>اختياري</small><input id="f-target" class="n" inputmode="decimal" value="${v('target')}"></label></div>
         ${!q ? `<label class="field">السعر الحالي (يدوي)<input id="f-manual" class="n" inputmode="decimal" value="${v('manual')}"></label>` : ''}
+        ${(() => { const L = levels(q); return L ? `<button type="button" class="btn block" data-act="use-levels" data-stop="${L.stop}" data-target="${L.target}">استخدم المقترح: وقف ${num(fmt(L.stop))} وهدف ${num(fmt(L.target))}</button>` : ''; })()}
         <div class="explain">وقف الخسارة: السعر اللي لو نزل له السهم تطلع منه. الهدف: السعر اللي لو وصله تفكر تبيع.</div>`
       : `<label class="field">أشتري إذا نزل تحت<input id="f-buy" class="n" inputmode="decimal" value="${v('buyBelow')}"></label>
         <label class="field">ملاحظتك <small>ليش تراقبه؟</small><input id="f-note" value="${v('note')}"></label>`}
@@ -625,6 +696,7 @@ document.addEventListener('click', async (e) => {
   switch (a) {
     case 'detail': openSheet({ type: 'detail', code: t.dataset.code }); break;
     case 'bars': st.bars = +t.dataset.n; renderSheet(); break;
+    case 'use-levels': { const a = $('#f-stop'), b = $('#f-target'); if (a) a.value = t.dataset.stop; if (b) b.value = t.dataset.target; toast('حطيت المستويات المقترحة، اضغط حفظ'); break; }
     case 'close': closeSheet(); break;
     case 'settings': openSheet({ type: 'settings' }); break;
     case 'add-holding': openSheet({ type: 'holding', code: t.dataset.code || null }); break;
@@ -639,7 +711,7 @@ document.addEventListener('click', async (e) => {
       const k = st.type === 'holding' ? 'holdings' : 'watch'; S[k] = S[k].filter((x) => x.id !== st.id); save(); closeSheet(); render(); toast('انحذف'); break;
     }
     case 'sort': mktSort = t.dataset.k; render(); break;
-    case 'sector': mktSector = t.dataset.k; render(); break;
+    case 'sector': mktSector = mktSector === t.dataset.k && t.classList.contains('tile') ? '' : t.dataset.k; render(); break;
     case 'copy': { const ta = $('#f-backup'); try { await navigator.clipboard.writeText(ta.value); toast('انسخت'); } catch { ta.select(); toast('حدد النص وانسخه'); } break; }
     case 'restore': {
       try { const d = JSON.parse($('#f-restore').value); if (!Array.isArray(d.holdings)) throw 0; S = Object.assign(blank(), d); save(); closeSheet(); render(); toast('تم الاسترجاع'); }
@@ -660,6 +732,11 @@ $('#settingsBtn').addEventListener('click', () => openSheet({ type: 'settings' }
 $('#refreshBtn').addEventListener('click', () => fetchMarket(true));
 
 document.addEventListener('input', (e) => {
+  if (e.target.id === 'calcQty') {
+    const box = e.target.closest('.calc'); const n = parseInt(e.target.value, 10);
+    const L = box.dataset.stop ? { stop: +box.dataset.stop, target: +box.dataset.target } : null;
+    $('#calcOut').innerHTML = calcOut(n, +box.dataset.price, L, +box.dataset.div); return;
+  }
   if (e.target.id === 'mktSearch') {
     mktQuery = e.target.value; const pos = e.target.selectionStart; render();
     const el = $('#mktSearch'); if (el) { el.focus(); el.setSelectionRange(pos, pos); }
@@ -707,14 +784,14 @@ window.addEventListener('beforeinstallprompt', (e) => {
   e.preventDefault(); deferredInstall = e;
   try { if (localStorage.getItem('mahfazti.noinstall')) return; } catch {}
   const b = $('#installBar'); b.hidden = false;
-  b.innerHTML = `<span>ثبّت <b>محفظتي</b> على شاشتك الرئيسية</span><button class="btn pri" data-act="install">تثبيت</button><button class="x" data-act="hide-install" aria-label="إخفاء">×</button>`;
+  b.innerHTML = `<span>ثبّت <b>محفظتي 1</b> على شاشتك الرئيسية</span><button class="btn pri" data-act="install">تثبيت</button><button class="x" data-act="hide-install" aria-label="إخفاء">×</button>`;
 });
 function iosHint() {
   const standalone = window.matchMedia('(display-mode: standalone)').matches || navigator.standalone;
   if (standalone || !/iphone|ipad|ipod/i.test(navigator.userAgent)) return;
   try { if (localStorage.getItem('mahfazti.noinstall')) return; } catch {}
   const b = $('#installBar'); b.hidden = false;
-  b.innerHTML = `<span>لإضافة <b>محفظتي</b> للشاشة: زر المشاركة <span aria-hidden="true">⬆︎</span> ← «إضافة إلى الشاشة الرئيسية»</span><button class="x" data-act="hide-install" aria-label="إخفاء">×</button>`;
+  b.innerHTML = `<span>لإضافة <b>محفظتي 1</b> للشاشة: زر المشاركة <span aria-hidden="true">⬆︎</span> ← «إضافة إلى الشاشة الرئيسية»</span><button class="x" data-act="hide-install" aria-label="إخفاء">×</button>`;
 }
 
 /* ───────── استيراد من الرابط ───────── */

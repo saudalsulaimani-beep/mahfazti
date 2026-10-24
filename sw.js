@@ -1,5 +1,5 @@
 // عامل الخدمة: يخلي التطبيق يفتح بدون نت، ويجيب الأسعار من الشبكة أولاً
-const VERSION = 'mahfazti-v4';
+const VERSION = 'mahfazti-v5';
 const SHELL = ['./', 'index.html', 'app.css', 'app.js', 'manifest.webmanifest', 'data/tickers.json',
   'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png', 'icons/favicon-32.png'];
 
