@@ -245,18 +245,39 @@ function analyze(code) {
   const score = F.reduce((a, f) => a + f.s, 0);
   let v, tone, why;
   const p = q.p;
-  if (own && own.stop != null && p <= own.stop) { v = 'بيع حسب خطتك'; tone = 'loss'; why = `السعر ${num(fmt(p))} كسر وقف الخسارة اللي حددته ${num(fmt(own.stop))}. خطتك تقول اطلع.`; }
+  const hh = own ? calc().H.find((x) => x.id === own.id) : null;
+  const nearLow = pos != null && pos < 15;
+  if (own && own.stop != null && p <= own.stop) { v = 'خطتك تقول بيع'; tone = 'loss'; why = `السعر ${num(fmt(p))} كسر الوقف اللي حددته ${num(fmt(own.stop))}. الوقف قرار اتخذته وأنت هادي. إذا قررت تحتفظ، غيّر الوقف بقرار واعي بدل ما تتجاهله.`; }
   else if (own) {
     if (score >= 2) { v = 'احتفاظ'; tone = 'gain'; why = 'الأرقام تدعم السهم. احتفظ وخل وقف خسارة يحمي ربحك.'; }
-    else if (score <= -2) { v = 'الميزان يميل للبيع'; tone = 'loss'; why = 'أغلب العوامل سلبية. اسأل نفسك: ليش أحتفظ فيه؟ إذا ما عندك سبب واضح، فلوسك ممكن تشتغل في سهم أقوى.'; }
+    else if (score <= -2 && nearLow) { v = 'احتفظ بدون تعزيز'; tone = 'warn'; why = `الأرقام ضعيفة، بس السعر قريب من أدنى سعر بالسنة، والبيع هنا يثبّت الخسارة عند أسوأ نقطة. لا تزيد فيه، وخل قاع السنة (${num(fmt(q.l52))}) خط الخروج.`; }
+    else if (score <= -2) { v = 'الميزان يميل للتخفيف'; tone = 'loss'; why = 'أغلب العوامل سلبية. خيار وسط: بيع جزء وخل الباقي بوقف، بدل كل شي أو لا شي.'; }
     else { v = 'احتفاظ بحذر'; tone = 'warn'; why = 'الصورة مختلطة. حدد وقف خسارة وراقب النتائج الجاية.'; }
-    if (own.stop == null && tone !== 'loss') why += ' ما حددت وقف خسارة لهذا السهم.';
+    if (own.stop == null && tone !== 'gain') why += ' ما حددت وقف خسارة لهذا السهم.';
   } else {
     if (score >= 2) { v = 'مرشح للشراء'; tone = 'gain'; why = 'الأرقام قوية. حدد سعر دخول في المراقبة وادخل بجزء من السيولة مو كلها.'; }
     else if (score <= -2) { v = 'ابتعد حالياً'; tone = 'loss'; why = 'أغلب العوامل سلبية في الوقت الحالي.'; }
     else { v = 'راقب'; tone = 'warn'; why = 'مو واضح. انتظر نتائج أو إشارة أوضح.'; }
   }
-  return { F, score, v, tone, why, note, pos, code };
+  if (hh && hh.weight < 5) why += ` مركزه صغير (${num(hh.weight.toFixed(0) + '%')} من محفظتك)، فتأثير أي قرار فيه محدود.`;
+  const nz = F.filter((f) => f.s !== 0);
+  const agree = nz.length >= 2 && (nz.every((f) => f.s > 0) || nz.every((f) => f.s < 0));
+  const conf = note && agree ? 'متوسطة' : 'منخفضة';
+  const r = rsi(q.c);
+  const bull = [...(note?.bull || [])], bear = [...(note?.bear || [])];
+  if (!note?.bull) {
+    if (nearLow) bull.push('قريب من أدنى سعر بالسنة');
+    if (yl >= 4.5) bull.push(`توزيعات ${yl.toFixed(1)}% بالسنة تدفع لك وأنت منتظر`);
+    if (m50 && q.p > m50) bull.push('فوق متوسط ٥٠ يوم (اتجاه صاعد)');
+    if (r != null && r < 30) bull.push('نزل بسرعة مؤخراً، وهذا أحياناً يجيب ارتداد');
+  }
+  if (!note?.bear) {
+    if (m50 && q.p < m50) bear.push('تحت متوسط ٥٠ يوم (اتجاه هابط)');
+    if (!yl) bear.push('ما يوزع أرباح');
+    if (r != null && r > 70) bear.push('صعد بسرعة مؤخراً، وممكن يصحح');
+    if (pos != null && pos > 85) bear.push('قريب من أعلى سعر بالسنة');
+  }
+  return { F, score, v, tone, why, note, pos, code, conf, bull, bear, own: hh };
 }
 /* مستويات الشراء: منطقة دخول، وقف، هدف — كلها من حركة السعر الفعلية
    صاعد (فوق متوسط ٥٠): الدخول عند الرجوع لمتوسط ٢٠ يوم
@@ -302,12 +323,33 @@ function lvlLine(L) {
   if (!L) return '';
   return `دخول ${num(fmt(L.entry))} · وقف ${num(fmt(L.stop))} · هدف ${num(fmt(L.target))}`;
 }
+function ownerBox(a) {
+  const h = a.own; const q = Q(a.code); const L = levels(q); if (!h || !q) return '';
+  const stop = h.stop ?? L?.stop, target = h.target ?? L?.target;
+  let out = `<div class="lv-box"><b>لو صار كذا، وش يصير بفلوسك؟</b><div class="kv">
+    ${target ? `<div class="cell"><div class="k">لو طلع لـ ${fmt(target)}</div><div class="v up-t">${sgn((target - h.p) * h.qty)} ريال</div></div>` : ''}
+    ${stop ? `<div class="cell"><div class="k">لو نزل لـ ${fmt(stop)}</div><div class="v down-t">${sgn((stop - h.p) * h.qty)} ريال</div></div>` : ''}
+  </div>`;
+  if (h.pnl < 0) {
+    const pick = bestPicks(1)[0]; const myDiv = (q.div || 0) * h.qty; const pq = pick ? Q(pick.a.code) : null;
+    out += `<div class="whyline"><b>عن الخسارة:</b> خسارتك ${num(fmt(Math.abs(h.pnl)))} ريال صارت، والبيع ما يزيدها ولا يرجعها. السؤال الوحيد: وين الـ ${num(fmt(h.value))} ريال تشتغل أحسن من اليوم وطالع؟</div>`;
+    if (pick && pq) out += `<div class="whyline">للمقارنة: نفس المبلغ في ${esc(pq.n)} (أقوى فرصة اليوم) يعطي توزيعات ~${num(fmt(h.value / pq.p * (pq.div || 0), 0))} ريال بالسنة، مقابل ${num(fmt(myDiv, 0))} هنا. التوزيعات وحدها ما تحسم، بس تعطيك صورة.</div>`;
+  }
+  return out + '</div>';
+}
 function verdictChip(a) { return a ? `<span class="vchip ${a.tone}">${a.v}</span>` : ''; }
 function analysisBlock(a) {
   if (!a) return '';
   return `<section class="analyst ${a.tone}">
     <div class="an-h"><span class="an-l">رأي المحلل</span>${verdictChip(a)}</div>
     <div class="an-why">${a.why}</div>
+    <div class="conf">ثقة التحليل: <b>${a.conf}</b> <span>· ${a.conf === 'متوسطة' ? 'العوامل متفقة والأخبار مراجعة' : 'العوامل مختلفة أو الأخبار ناقصة'}. ما فيه تحليل يضمن الحركة الجاية.</span></div>
+    <div class="bb">
+      <div class="bb-col up"><b>↑ ليش ممكن يطلع</b><ul>${a.bull.map((x) => `<li>${esc(x)}</li>`).join('') || '<li>ما فيه سبب واضح حالياً</li>'}</ul></div>
+      <div class="bb-col down"><b>↓ ليش ممكن ينزل</b><ul>${a.bear.map((x) => `<li>${esc(x)}</li>`).join('') || '<li>ما فيه سبب واضح حالياً</li>'}</ul></div>
+    </div>
+    ${a.note?.watch ? `<div class="watchbox"><b>وش يحسم:</b> ${esc(a.note.watch)}</div>` : ''}
+    ${a.own ? ownerBox(a) : ''}
     <ul class="factors">${a.F.map((f) => `<li><span class="fs ${f.s > 0 ? 'up' : f.s < 0 ? 'down' : 'flat'}">${f.s > 0 ? '+' : f.s < 0 ? '−' : '•'}</span><b>${f.k}:</b> ${f.t}</li>`).join('')}</ul>
     ${(() => { const b = buyView(a.code); const L = b?.L; if (!L) return '';
       return b.own ? `<div class="lv-box"><b>وقف خسارة مقترح:</b> ${num(fmt(L.stop))} <span class="explain">(تحت أدنى سعر بآخر ٢٠ جلسة بـ ٣٪)</span></div>`
@@ -371,6 +413,11 @@ ${vaultCard()}
   </section>
   ${foot()}`;
 }
+function bestPicks(n) {
+  const pool = [...new Set([...S.watch.map((w) => w.code), ...TICK.map((t) => t.code)])].filter((code) => !S.holdings.some((h) => h.code === code));
+  return pool.map((code) => buyView(code)).filter((b) => b && b.tone === 'gain')
+    .sort((x, y) => (y.a.score - x.a.score) || ((y.L?.near ? 1 : 0) - (x.L?.near ? 1 : 0)) || ((y.L?.rr || 0) - (x.L?.rr || 0))).slice(0, n);
+}
 /* خطة اليوم: تنبني من جديد مع كل تحديث للأسعار */
 function dailyPlan(c) {
   const all = TICK.map((t) => Q(t.code)).filter(Boolean);
@@ -386,14 +433,13 @@ function dailyPlan(c) {
   const own = c.H.map((h) => {
     const a = analyze(h.code); const L = levels(h.q); if (!a) return '';
     let act;
-    if (a.v === 'بيع حسب خطتك') act = `بيع ${num(h.qty)} سهم. السعر ${num(fmt(h.p))} تحت وقفك ${num(fmt(h.stop))}.`;
-    else if (a.tone === 'loss') act = `فكّر بالبيع. ${L ? `إذا بتحتفظ، حط وقف عند ${num(fmt(h.stop ?? L.stop))}.` : ''}`;
+    if (a.v === 'خطتك تقول بيع') act = `السعر ${num(fmt(h.p))} تحت وقفك ${num(fmt(h.stop))}. قرر اليوم: تبيع، أو تنقل الوقف بوعي${L ? ` (المقترح من آخر ٢٠ جلسة: ${num(fmt(L.stop))})` : ''}.`;
+    else if (a.v === 'احتفظ بدون تعزيز') act = `لا تزيد فيه. اخرج لو كسر ${num(fmt(Q(h.code)?.l52))}.`;
+    else if (a.tone === 'loss') act = `فكّر تبيع جزء. وقف للباقي عند ${num(fmt(h.stop ?? L?.stop))}.`;
     else act = `احتفظ. وقف عند ${num(fmt(h.stop ?? L?.stop))}${h.target ? ` وهدف ${num(fmt(h.target))}` : L ? ` وهدف ${num(fmt(L.target))}` : ''}.`;
     return `<button class="pl-row" data-act="detail" data-code="${esc(h.code)}"><span class="vchip ${a.tone}">${a.v}</span><div><b>${esc(nameOf(h))}</b><div class="whyline">${act}</div></div></button>`;
   }).join('');
-  const pool = [...new Set([...S.watch.map((w) => w.code), ...TICK.map((t) => t.code)])].filter((code) => !S.holdings.some((h) => h.code === code));
-  const picks = pool.map((code) => buyView(code)).filter((b) => b && b.tone === 'gain')
-    .sort((x, y) => (y.a.score - x.a.score) || ((y.L?.near ? 1 : 0) - (x.L?.near ? 1 : 0)) || ((y.L?.rr || 0) - (x.L?.rr || 0))).slice(0, 4);
+  const picks = bestPicks(4);
   const budget = Math.min(S.cash * (weak ? 0.25 : 0.34), (c.total || S.cash) * 0.25);
   const buys = picks.map((b) => { const n = Math.floor(budget / b.L.entry);
     return `<button class="pl-row" data-act="detail" data-code="${esc(b.a.code)}"><span class="vchip gain">${b.L.near ? 'اشتر الحين' : 'اشتر عند ' + fmt(b.L.entry)}</span><div><b>${esc(Q(b.a.code)?.n || b.a.code)}</b><div class="whyline">${lvlLine(b.L)}${n ? ` · حوالي ${num(n)} سهم` : ''}</div><div class="whyline">${b.why}</div></div></button>`; }).join('');
