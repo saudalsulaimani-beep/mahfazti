@@ -23,6 +23,7 @@ let S = load();            // {cash, holdings:[{id,code,name,qty,cost,stop,targe
 let M = null;              // market.json
 let TICK = [];             // data/tickers.json
 let NOTES = {};            // data/notes.json — ملاحظات المحلل المكتوبة
+let FUND = {};             // data/fundamentals.json — بيانات مالية يومية
 let view = 'home';
 let mktSort = 'best';
 let mktQuery = '';
@@ -221,6 +222,49 @@ function alerts(c) {
   return out.sort((a, b) => order[a.t] - order[b.t]);
 }
 
+/* ───────── قائمة فحص المحلل ─────────
+   ٧ فحوصات ثابتة لكل سهم، نفس المعيار للكل */
+const isBank = (code) => TICK.find((t) => t.code === code)?.sector === 'بنوك ومالية';
+let _secPE = null;
+function sectorPE(code) {
+  if (!_secPE || _secPE.k !== FUND.updatedAt) {
+    const by = {};
+    TICK.forEach((t) => { const pe = FUND.f?.[t.code]?.pe; if (pe > 0 && pe < 80) (by[t.sector] ||= []).push(pe); });
+    const med = {}; Object.entries(by).forEach(([k, a]) => { a.sort((x, y) => x - y); med[k] = a[Math.floor(a.length / 2)]; });
+    _secPE = { k: FUND.updatedAt, med };
+  }
+  return _secPE.med[TICK.find((t) => t.code === code)?.sector] ?? null;
+}
+function checklist(code) {
+  const q = Q(code), f = FUND.f?.[code]; if (!q || code === 'TASI') return null;
+  const C = []; const pc = (x) => (x * 100).toFixed(1) + '%';
+  const add = (k, ok, val, why) => C.push({ k, ok, val, why });
+  // ١. التقييم
+  const med = sectorPE(code);
+  if (f?.pe > 0) add('التقييم (مكرر الربحية)', med ? (f.pe <= med ? 1 : f.pe > med * 1.3 ? -1 : 0) : 0, `${f.pe.toFixed(1)}${med ? ` · قطاعه ${med.toFixed(1)}` : ''}`, 'كم ريال تدفع مقابل كل ريال ربح، مقارنة بشركات قطاعه.');
+  else if (f && f.margin != null && f.margin < 0) add('التقييم (مكرر الربحية)', -1, 'خسرانة', 'الشركة ما تربح، فما لها مكرر.');
+  else add('التقييم (مكرر الربحية)', null, '—', 'ما فيه بيانات.');
+  // ٢. الربحية
+  const roe = f?.roe ?? (f?.pb && f?.pe > 0 ? f.pb / f.pe : null);
+  add('الربحية (العائد على حقوق المساهمين)', roe == null ? null : roe >= 0.12 ? 1 : roe < 0.05 ? -1 : 0, roe == null ? '—' : pc(roe), 'كم تربح الشركة من كل ريال يملكه المساهمين. فوق ١٢٪ ممتاز.');
+  // ٣. نمو الأرباح
+  add('نمو الأرباح (آخر ربع)', f?.eg == null ? null : f.eg > 0.05 ? 1 : f.eg < -0.1 ? -1 : 0, f?.eg == null ? '—' : (f.eg > 0 ? '+' : '') + pc(f.eg), 'مقارنة بنفس الربع من السنة اللي قبل.' + (f?.eg != null && Math.abs(f.eg) > 1 ? ' نسبة كبيرة جداً، غالباً بسبب ربع ضعيف السنة الماضية أو بند استثنائي، فلا تبني عليها لحالها.' : ''));
+  // ٤. الديون
+  if (isBank(code)) add('الديون', null, 'بنك', 'البنوك ديونها جزء من شغلها، فما تنقاس بنفس الطريقة.');
+  else add('الديون (دين ÷ حقوق ملكية)', f?.de == null ? null : f.de < 100 ? 1 : f.de > 200 ? -1 : 0, f?.de == null ? '—' : (f.de / 100).toFixed(2) + ' مرة', 'أقل من مرة وحدة مريح. فوق مرتين خطر لو ضعفت الأرباح.');
+  // ٥. التوزيعات
+  const yl = q.div && q.p ? q.div / q.p : 0;
+  add('التوزيعات واستدامتها', !yl ? -1 : (yl >= 0.03 && (f?.payout == null || f.payout <= 0.8)) ? 1 : (f?.payout > 1 ? -1 : 0), yl ? `${pc(yl)}${f?.payout ? ` · توزع ${(f.payout * 100).toFixed(0)}% من أرباحها` : ''}` : 'ما توزع', 'عائد جيد ونسبة توزيع أقل من ٨٠٪ من الأرباح = توزيع قابل يستمر.');
+  // ٦. الاتجاه الطويل
+  const m200 = sma(q.c, 200);
+  add('الاتجاه الطويل (متوسط ٢٠٠ يوم)', m200 == null ? null : q.p > m200 ? 1 : -1, m200 == null ? '—' : `${q.p > m200 ? 'فوق' : 'تحت'} ${fmt(m200)}`, 'أشهر خط عند المحترفين: فوق متوسط ٢٠٠ يوم = الاتجاه الكبير صاعد.');
+  // ٧. المحللين
+  const up = f?.tgt && f.nA >= 3 ? (f.tgt - q.p) / q.p : null;
+  add('أهداف المحللين', up == null ? null : up >= 0.1 ? 1 : up < 0 ? -1 : 0, up == null ? '—' : `${fmt(f.tgt)} (${up >= 0 ? '+' : ''}${pc(up)}) من ${f.nA} محلل`, 'متوسط السعر اللي يتوقعه المحللين خلال سنة. يخطون كثير، بس يعطيك صورة.');
+  const pass = C.filter((c) => c.ok === 1).length, fail = C.filter((c) => c.ok === -1).length, known = C.filter((c) => c.ok != null).length;
+  return { C, pass, fail, known, net: pass - fail, f, up };
+}
+
 /* ───────── المحلل ─────────
    يجمع: الأرباح (من ملاحظات مكتوبة بتاريخها) + الاتجاه + التوزيعات + خطتك أنت.
    كل عامل ظاهر بسببه، والخلاصة ميزان مو توقع. */
@@ -232,7 +276,18 @@ function analyze(code) {
   if (note) {
     const sc = { 'إيجابي': 2, 'سلبي': -2, 'مختلط': 0 }[note.fund] ?? 0;
     F.push({ k: 'الأرباح والأخبار', s: sc, t: note.fund === 'إيجابي' ? 'أرباح تنمو' : note.fund === 'سلبي' ? 'أرباح نازلة أو خسائر' : 'صورة مختلطة' });
-  } else F.push({ k: 'الأرباح والأخبار', s: 0, t: 'ما راجعت نتائجها بعد', na: true });
+  } else {
+    const eg = FUND.f?.[code]?.eg;
+    if (eg != null) F.push({ k: 'الأرباح', s: eg > 0.05 ? 2 : eg < -0.1 ? -2 : 0, t: Math.abs(eg) > 1 ? (eg > 0 ? 'أرباح آخر ربع تضاعفت' : 'أرباح آخر ربع انهارت') : `أرباح آخر ربع ${eg > 0 ? '+' : ''}${(eg * 100).toFixed(0)}%` });
+    else F.push({ k: 'الأرباح والأخبار', s: 0, t: 'ما فيه بيانات أرباح', na: true });
+  }
+  const CL = checklist(code);
+  if (CL) {
+    const val = CL.C[0], an = CL.C[6], lt = CL.C[5];
+    if (val.ok != null) F.push({ k: 'التقييم', s: val.ok, t: `مكرر ${val.val}` });
+    if (an.ok != null) F.push({ k: 'المحللين', s: an.ok, t: `هدفهم ${an.val}` });
+    if (lt.ok != null) F.push({ k: 'الاتجاه الطويل', s: lt.ok, t: `${lt.ok > 0 ? 'فوق' : 'تحت'} متوسط ٢٠٠ يوم` });
+  }
   const m50 = sma(q.c, 50), p3 = perf(q, 63);
   if (m50 && p3 != null) {
     const s = q.p > m50 && p3 > 0 ? 1 : q.p < m50 && p3 < 0 ? -1 : 0;
@@ -243,26 +298,28 @@ function analyze(code) {
   const pos = q.h52 > q.l52 ? (q.p - q.l52) / (q.h52 - q.l52) * 100 : null;
   if (pos != null) F.push({ k: 'السعر من مدى السنة', s: 0, t: pos < 15 ? `قريب من أدنى سعر بالسنة (${num(pos.toFixed(0) + '%')}): رخيص نسبياً، أو فيه سبب للنزول` : pos > 85 ? `قريب من أعلى سعر بالسنة (${num(pos.toFixed(0) + '%')})` : `في نص المدى (${num(pos.toFixed(0) + '%')})` });
   const score = F.reduce((a, f) => a + f.s, 0);
+  // عتبات الحكم بعد ما صارت العوامل أكثر
+  const HI = 3, LO = -3;
   let v, tone, why;
   const p = q.p;
   const hh = own ? calc().H.find((x) => x.id === own.id) : null;
   const nearLow = pos != null && pos < 15;
   if (own && own.stop != null && p <= own.stop) { v = 'خطتك تقول بيع'; tone = 'loss'; why = `السعر ${num(fmt(p))} كسر الوقف اللي حددته ${num(fmt(own.stop))}. الوقف قرار اتخذته وأنت هادي. إذا قررت تحتفظ، غيّر الوقف بقرار واعي بدل ما تتجاهله.`; }
   else if (own) {
-    if (score >= 2) { v = 'احتفاظ'; tone = 'gain'; why = 'الأرقام تدعم السهم. احتفظ وخل وقف خسارة يحمي ربحك.'; }
-    else if (score <= -2 && nearLow) { v = 'احتفظ بدون تعزيز'; tone = 'warn'; why = `الأرقام ضعيفة، بس السعر قريب من أدنى سعر بالسنة، والبيع هنا يثبّت الخسارة عند أسوأ نقطة. لا تزيد فيه، وخل قاع السنة (${num(fmt(q.l52))}) خط الخروج.`; }
-    else if (score <= -2) { v = 'الميزان يميل للتخفيف'; tone = 'loss'; why = 'أغلب العوامل سلبية. خيار وسط: بيع جزء وخل الباقي بوقف، بدل كل شي أو لا شي.'; }
+    if (score >= HI) { v = 'احتفاظ'; tone = 'gain'; why = 'الأرقام تدعم السهم. احتفظ وخل وقف خسارة يحمي ربحك.'; }
+    else if (score <= LO && nearLow) { v = 'احتفظ بدون تعزيز'; tone = 'warn'; why = `الأرقام ضعيفة، بس السعر قريب من أدنى سعر بالسنة، والبيع هنا يثبّت الخسارة عند أسوأ نقطة. لا تزيد فيه، وخل قاع السنة (${num(fmt(q.l52))}) خط الخروج.`; }
+    else if (score <= LO) { v = 'الميزان يميل للتخفيف'; tone = 'loss'; why = 'أغلب العوامل سلبية. خيار وسط: بيع جزء وخل الباقي بوقف، بدل كل شي أو لا شي.'; }
     else { v = 'احتفاظ بحذر'; tone = 'warn'; why = 'الصورة مختلطة. حدد وقف خسارة وراقب النتائج الجاية.'; }
     if (own.stop == null && tone !== 'gain') why += ' ما حددت وقف خسارة لهذا السهم.';
   } else {
-    if (score >= 2) { v = 'مرشح للشراء'; tone = 'gain'; why = 'الأرقام قوية. حدد سعر دخول في المراقبة وادخل بجزء من السيولة مو كلها.'; }
-    else if (score <= -2) { v = 'ابتعد حالياً'; tone = 'loss'; why = 'أغلب العوامل سلبية في الوقت الحالي.'; }
+    if (score >= HI) { v = 'مرشح للشراء'; tone = 'gain'; why = 'الأرقام قوية. حدد سعر دخول في المراقبة وادخل بجزء من السيولة مو كلها.'; }
+    else if (score <= LO) { v = 'ابتعد حالياً'; tone = 'loss'; why = 'أغلب العوامل سلبية في الوقت الحالي.'; }
     else { v = 'راقب'; tone = 'warn'; why = 'مو واضح. انتظر نتائج أو إشارة أوضح.'; }
   }
   if (hh && hh.weight < 5) why += ` مركزه صغير (${num(hh.weight.toFixed(0) + '%')} من محفظتك)، فتأثير أي قرار فيه محدود.`;
   const nz = F.filter((f) => f.s !== 0);
   const agree = nz.length >= 2 && (nz.every((f) => f.s > 0) || nz.every((f) => f.s < 0));
-  const conf = note && agree ? 'متوسطة' : 'منخفضة';
+  const conf = (note || (CL && CL.known >= 5)) && agree ? 'متوسطة' : 'منخفضة';
   const r = rsi(q.c);
   const bull = [...(note?.bull || [])], bear = [...(note?.bear || [])];
   if (!note?.bull) {
@@ -277,7 +334,11 @@ function analyze(code) {
     if (r != null && r > 70) bear.push('صعد بسرعة مؤخراً، وممكن يصحح');
     if (pos != null && pos > 85) bear.push('قريب من أعلى سعر بالسنة');
   }
-  return { F, score, v, tone, why, note, pos, code, conf, bull, bear, own: hh };
+  if (CL?.up != null && CL.up >= 0.15 && !note?.bull) bull.push(`المحللين يتوقعون ${(CL.up * 100).toFixed(0)}% صعود خلال سنة`);
+  if (CL?.f?.pe > 0 && sectorPE(code) && CL.f.pe < sectorPE(code) * 0.8 && !note?.bull) bull.push('أرخص من قطاعه بمكرر الربحية');
+  if (CL?.f?.eg != null && CL.f.eg < -0.1 && !note?.bear) bear.push(`أرباح آخر ربع نزلت ${Math.abs(CL.f.eg * 100).toFixed(0)}%`);
+  if (CL?.f?.de > 200 && !isBank(code) && !note?.bear) bear.push('ديونها عالية مقارنة بحقوق المساهمين');
+  return { F, score, v, tone, why, note, pos, code, conf, bull, bear, own: hh, CL };
 }
 /* مستويات الشراء: منطقة دخول، وقف، هدف — كلها من حركة السعر الفعلية
    صاعد (فوق متوسط ٥٠): الدخول عند الرجوع لمتوسط ٢٠ يوم
@@ -348,6 +409,9 @@ function analysisBlock(a) {
       <div class="bb-col up"><b>↑ ليش ممكن يطلع</b><ul>${a.bull.map((x) => `<li>${esc(x)}</li>`).join('') || '<li>ما فيه سبب واضح حالياً</li>'}</ul></div>
       <div class="bb-col down"><b>↓ ليش ممكن ينزل</b><ul>${a.bear.map((x) => `<li>${esc(x)}</li>`).join('') || '<li>ما فيه سبب واضح حالياً</li>'}</ul></div>
     </div>
+    ${a.CL ? `<details class="cl"><summary>قائمة فحص المحلل: <b>${num(a.CL.pass)} ✓</b> · <b>${num(a.CL.fail)} ✗</b> من ${num(a.CL.known)} <span class="explain">(اضغط للتفاصيل)</span></summary>
+      <div class="cl-list">${a.CL.C.map((c) => `<div class="cl-row"><span class="ck ${c.ok === 1 ? 'up' : c.ok === -1 ? 'down' : 'flat'}">${c.ok === 1 ? '✓' : c.ok === -1 ? '✗' : '–'}</span><div class="cl-main"><div class="cl-top"><b>${c.k}</b><bdi class="clv">${esc(c.val)}</bdi></div><div class="whyline">${c.why}</div></div></div>`).join('')}</div>
+      <div class="an-date" style="margin-top:6px">بيانات مالية من Yahoo Finance · ${num((FUND.updatedAt || '').slice(0, 10))}</div></details>` : ''}
     ${a.note?.watch ? `<div class="watchbox"><b>وش يحسم:</b> ${esc(a.note.watch)}</div>` : ''}
     ${a.own ? ownerBox(a) : ''}
     <ul class="factors">${a.F.map((f) => `<li><span class="fs ${f.s > 0 ? 'up' : f.s < 0 ? 'down' : 'flat'}">${f.s > 0 ? '+' : f.s < 0 ? '−' : '•'}</span><b>${f.k}:</b> ${f.t}</li>`).join('')}</ul>
@@ -413,6 +477,17 @@ ${vaultCard()}
   </section>
   ${foot()}`;
 }
+function veteranRules(c, weak) {
+  const R = [];
+  const losers = c.H.filter((h) => h.pnlPct < -15 && (analyze(h.code)?.score ?? 0) < 0);
+  if (losers.length) R.push(`لا تعدّل متوسطك (تشتري زيادة) في ${losers.map((h) => esc(nameOf(h))).join(' و')}. التعديل يصلح بس لسهم أرقامه قوية نزل مع السوق، مو لسهم أرباحه نازلة.`);
+  const cashPct = c.total ? S.cash / c.total * 100 : 0;
+  if (cashPct > 50) R.push(`سيولتك ${num(cashPct.toFixed(0) + '%')} من محفظتك. هذي قوة مو ضعف. ادخل على ٣ دفعات على أسابيع، بدل ما تحطها كلها مرة وحدة.`);
+  if (weak) R.push('في السوق النازل، الصبر ربح. لا تحاول تصيد القاع بالضبط، ادخل لما يثبت السعر فوق منطقة الدخول.');
+  const big = c.H.find((h) => h.weight > 25); if (big) R.push(`${esc(nameOf(big))} صار ${num(big.weight.toFixed(0) + '%')} من محفظتك. المحترفين نادراً يخلون سهم واحد فوق ٢٠-٢٥٪.`);
+  R.push('كل صفقة تبدأ بسؤالين: وين أطلع لو غلطت (الوقف)؟ وكم أقصى خسارة أتحملها بالريال؟');
+  return `<ul class="rules">${R.map((r) => `<li>${r}</li>`).join('')}</ul>`;
+}
 function bestPicks(n) {
   const pool = [...new Set([...S.watch.map((w) => w.code), ...TICK.map((t) => t.code)])].filter((code) => !S.holdings.some((h) => h.code === code));
   return pool.map((code) => buyView(code)).filter((b) => b && b.tone === 'gain')
@@ -449,6 +524,7 @@ function dailyPlan(c) {
     ${NOTES.market ? `<div class="an-note">${esc(NOTES.market)}<div class="an-date">أخبار السوق · ${num(NOTES.updated || '')}</div></div>` : ''}
     <h3 class="pl-sub">١. أسهمك</h3>${own || '<div class="whyline">ما عندك أسهم.</div>'}
     <h3 class="pl-sub">٢. فرص الشراء</h3>${buys || '<div class="whyline">ما فيه فرصة قوية اليوم. خلك كاش، وهذا قرار بحد ذاته.</div>'}
+    <h3 class="pl-sub">قواعد المحلل لليوم</h3>${veteranRules(c, weak)}
     <h3 class="pl-sub">٣. السيولة</h3><div class="whyline">عندك ${num(fmt(S.cash, 0))} ريال. القاعدة: لا تحط أكثر من ${num(fmt(budget, 0))} ريال في سهم واحد${weak ? '، وخل نصف سيولتك على الأقل كاش لين يهدأ السوق' : ''}.</div>
     <div class="an-date">مبنية آلياً من الأرقام وملاحظات الأخبار، مو توصية مرخصة. القرار لك.</div>
   </section>`;
@@ -582,6 +658,8 @@ const LESSONS = [
   ['"متى يرجع لسعري؟" سؤال غلط', 'السوق ما يدري بكم اشتريت، والسهم الخسران ما عليه يرجع لسعرك.', 'السؤال الصحيح: لو معي قيمته كاش اليوم، بشتريه؟ إذا لا، فكّر وين الفلوس تشتغل أحسن.'],
   ['وش هو الخط الذهبي المتقطع في الرسم؟', 'متوسط سعر آخر ٥٠ جلسة. لما السعر فوقه، الاتجاه العام صاعد. لما يكون تحته، هابط.', 'يعطيك صورة عامة بس. ما يعرف الأخبار ولا نتائج الشركة، وأي تطبيق يعطيك "ثقة ٨٠٪" منه يعطيك رقم مخترع.'],
   ['كيف التطبيق يحسب "ادخل عند" والوقف والهدف؟', 'إذا السهم صاعد (فوق متوسط ٥٠ يوم): سعر الدخول عند رجوعه لمتوسط آخر ٢٠ يوم، بدل ما تلحقه وهو طاير. إذا هابط: الدخول قرب أدنى سعر بآخر ٢٠ جلسة (الدعم). الوقف تحت أدنى سعر بآخر ٢٠ جلسة بـ ٣٪. الهدف أعلى سعر بآخر ٢٠ جلسة أو متوسط ٥٠ يوم، وأقل شي ٧٪ فوق سعر الدخول.', '"كويس للشراء" يطلع بس لما الأرباح والاتجاه والتوزيعات إيجابية، والمكسب المتوقع أكبر من المخاطرة بـ ١.٢ مرة على الأقل.'],
+  ['قائمة فحص المحلل: وش الـ ٧ فحوصات؟', 'كل سهم ينفحص بنفس القائمة: ١) مكرر الربحية مقارنة بقطاعه، ٢) العائد على حقوق المساهمين (فوق ١٢٪ ممتاز)، ٣) نمو أرباح آخر ربع، ٤) الديون، ٥) التوزيعات واستمراريتها، ٦) السعر فوق أو تحت متوسط ٢٠٠ يوم، ٧) متوسط أهداف المحللين.', 'السهم اللي ينجح في أغلبها ومع اتجاه صاعد هو اللي يطلع "كويس للشراء". ولا سهم ينجح في الكل، والقائمة تمنعك تشتري سهم بس لأنه نزل.'],
+  ['أهداف المحللين: أصدقها؟', 'هي متوسط توقعات بنوك الاستثمار لسعر السهم بعد سنة. مفيدة كصورة عامة، بس المحللين عادة متفائلين ويعدلون أهدافهم بعد ما يتحرك السعر.', 'استخدمها كعامل واحد من سبعة، مو كوعد.'],
   ['RSI وش يعني؟', 'مقياس من ٠ إلى ١٠٠ لسرعة حركة السعر في آخر ١٤ جلسة. فوق ٧٠: صعد بسرعة كبيرة. تحت ٣٠: نزل بسرعة كبيرة.', 'مو إشارة شراء أو بيع لحاله. سهم ممكن يظل فوق ٧٠ أسابيع وهو يصعد.'],
 ];
 function vLearn() {
@@ -858,6 +936,7 @@ async function boot() {
   const imp = readImportHash();
   try { TICK = await (await fetch('data/tickers.json')).json(); } catch { TICK = []; }
   try { NOTES = await (await fetch('data/notes.json?t=' + Date.now())).json(); } catch { NOTES = {}; }
+  try { FUND = await (await fetch('data/fundamentals.json?t=' + Date.now())).json(); } catch { FUND = {}; }
   await fetchMarket(false);
   if (imp) openSheet({ type: 'import', data: imp });
   iosHint();

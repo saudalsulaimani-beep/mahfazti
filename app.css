@@ -269,3 +269,22 @@ details .eg{background:var(--surface-2);border-radius:10px;padding:8px 12px;marg
 .bb-col.up b{color:var(--gain)} .bb-col.down b{color:var(--loss)}
 .bb-col ul{margin:4px 0 0;padding-inline-start:16px;line-height:1.6}
 .watchbox{font-size:.84rem;border:1.5px dashed var(--gold);border-radius:12px;padding:8px 10px}
+
+.cl{background:var(--surface-2);border-radius:12px;padding:10px 12px;box-shadow:none}
+.cl summary{font-family:var(--f-body);font-weight:600;font-size:.88rem}
+.cl summary::after{content:""}
+.cl table{width:100%;border-collapse:collapse;margin-top:8px;font-size:.82rem}
+.cl td{padding:6px 4px;border-top:1px solid var(--line);vertical-align:top}
+.cl td.num{white-space:nowrap;text-align:left;font-weight:600}
+.ck{width:22px;font-weight:700;text-align:center}
+.ck.up{color:var(--gain)} .ck.down{color:var(--loss)} .ck.flat{color:var(--faint)}
+.rules{margin:0;padding-inline-start:18px;font-size:.84rem;line-height:1.7;display:flex;flex-direction:column;gap:4px}
+
+.cl-list{display:flex;flex-direction:column;margin-top:8px}
+.cl-row{display:flex;gap:8px;padding:8px 0;border-top:1px solid var(--line)}
+.cl-main{flex:1;min-width:0}
+.cl-top{display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;font-size:.85rem}
+.cl-top bdi{font-weight:600;font-size:.8rem}
+
+.cl summary{display:block}
+.clv{font-weight:600;font-size:.8rem;font-variant-numeric:tabular-nums;color:var(--fg)}
