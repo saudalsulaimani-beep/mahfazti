@@ -4,17 +4,23 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      test_hop:
+        description: "اختبار: يطلق دورة وحدة إضافية حتى خارج وقت التداول"
+        type: boolean
+        default: false
   schedule:
-    # وقت تداول: الأحد-الخميس 10:00-15:10 بتوقيت الرياض (07:00-12:10 UTC) كل 5 دقائق
-    - cron: "*/5 7-11 * * 0-4"
-    - cron: "0,5,10,15,20 12 * * 0-4"
-    # بعد الإغلاق: إغلاق رسمي
+    # بدايات احتياطية للسلسلة. الجدولة المجانية في GitHub تتأخر وتسقط كثير، فالاعتماد الأساسي على السلسلة نفسها
+    - cron: "50 6 * * 0-4"
+    - cron: "20,50 7-11 * * 0-4"
+    # بعد الإغلاق: الإغلاق الرسمي
     - cron: "40 12 * * 0-4"
 
 permissions:
   contents: write
   pages: write
   id-token: write
+  actions: write
 
 concurrency:
   group: pages
@@ -23,7 +29,7 @@ concurrency:
 jobs:
   update:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 12
     environment:
       name: github-pages
       url: ${{ steps.deploy.outputs.page_url }}
@@ -34,17 +40,16 @@ jobs:
         with:
           node-version: 20
 
-      - name: آخر نسخة منشورة من الأسعار (احتياط لو فشل سهم)
-        run: curl -fsSL "https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/data/market.json" -o data/market.json || echo "لا توجد نسخة سابقة"
+      - name: آخر نسخة منشورة من الأسعار والبيانات المالية
+        run: |
+          base="https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/data"
+          curl -fsSL "$base/market.json?x=$RANDOM" -o data/market.json || echo "لا توجد نسخة سابقة من الأسعار"
+          curl -fsSL "$base/fundamentals.json?x=$RANDOM" -o data/fundamentals.json || echo "لا توجد نسخة سابقة من البيانات المالية"
 
-      - name: جلب الأسعار
+      - name: جلب الأسعار (سنة كاملة أول مرة باليوم، وبعدها آخر الأسعار)
         run: node scripts/fetch-prices.mjs
 
-      - name: آخر نسخة من البيانات المالية
-        run: curl -fsSL "https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/data/fundamentals.json" -o data/fundamentals.json || echo "لا توجد نسخة سابقة"
-
-      - name: البيانات المالية (مرة يومياً بعد الإغلاق، ومع كل نشر)
-        if: github.event_name != 'schedule' || github.event.schedule == '40 12 * * 0-4'
+      - name: البيانات المالية (مرة كل ١٢ ساعة)
         run: node scripts/fetch-fundamentals.mjs
 
       - name: نبضة أسبوعية حتى لا يوقف GitHub الجدولة
@@ -64,3 +69,25 @@ jobs:
           path: .
       - id: deploy
         uses: actions/deploy-pages@v4
+
+      - name: الدورة الجاية بعد ٥ دقائق (وقت التداول بس)
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          t=$((10#$(TZ=Asia/Riyadh date +%H%M))); d=$(TZ=Asia/Riyadh date +%u)
+          inwin=0
+          if { [ "$d" = "7" ] || [ "$d" -le 4 ]; } && [ "$t" -ge 930 ] && [ "$t" -le 1530 ]; then inwin=1; fi
+          if [ "${{ inputs.test_hop }}" = "true" ]; then inwin=1; fi
+          if [ "$inwin" != "1" ]; then echo "خارج وقت التداول — السلسلة تتوقف"; exit 0; fi
+          waiting() {
+            a=$(gh api "repos/$REPO/actions/workflows/prices.yml/runs?status=queued" --jq .total_count)
+            b=$(gh api "repos/$REPO/actions/workflows/prices.yml/runs?status=pending" --jq .total_count)
+            echo $((a + b))
+          }
+          if [ "$(waiting)" != "0" ]; then echo "فيه دورة ثانية بالطابور — هي تكمّل السلسلة"; exit 0; fi
+          sleep 220
+          if [ "$(waiting)" != "0" ]; then echo "فيه دورة ثانية بالطابور — هي تكمّل السلسلة"; exit 0; fi
+          gh workflow run prices.yml --ref main
+          echo "انطلقت الدورة الجاية"

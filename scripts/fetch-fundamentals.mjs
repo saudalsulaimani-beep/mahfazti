@@ -43,6 +43,9 @@ async function summary(sym, s) {
   return null;
 }
 
+if (previous.updatedAt && Date.now() - Date.parse(previous.updatedAt) < 12 * 3600e3 && !process.env.FORCE_FUND) {
+  console.log('fundamentals fresh — skip'); await fs.writeFile(OUT, JSON.stringify(previous)); process.exit(0);
+}
 const s = await session();
 if (!s) { console.log('no crumb — keeping previous fundamentals'); await fs.writeFile(OUT, JSON.stringify(previous)); process.exit(0); }
 

@@ -752,6 +752,7 @@ function vSteps() {
       <div class="lbl">${ses.live ? 'جلسة اليوم' : 'خطوات الجلسة الجاية'}</div>
       <h2>${ses.label}</h2>
       <div class="whyline">${actionable ? `عندك ${num(actionable)} ${actionable === 1 ? 'خطوة' : 'خطوات'}. نفّذها بالترتيب.` : 'ما عليك شي. لا خطوة = لا حركة، وهذا قرار بحد ذاته.'}</div>
+      <div class="an-date">الخطة تنحسب من جديد مع كل سعر · آخر سعر ${ago(M?.marketTime)}${NOTES.updated ? ` · تحليل الأخبار ${num(NOTES.updated)}` : ''}${ses.live ? ' · الأسعار تتحدث كل ٥ دقائق' : ''}</div>
     </section>
     ${steps.map(stepCard).join('') || '<div class="calm">✓ كل شي تمام. افتح التطبيق الجلسة الجاية.</div>'}
     <section class="card">
