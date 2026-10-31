@@ -24,7 +24,7 @@ let M = null;              // market.json
 let TICK = [];             // data/tickers.json
 let NOTES = {};            // data/notes.json — ملاحظات المحلل المكتوبة
 let FUND = {};             // data/fundamentals.json — بيانات مالية يومية
-let view = 'steps';
+let view = 'today';
 let mktSort = 'best';
 let mktQuery = '';
 let mktSector = '';
@@ -464,7 +464,10 @@ function render() {
   renderStatus();
   const v = $('#view');
   if (!M && !TICK.length) return;
-  v.innerHTML = ({ steps: vSteps, home: vHome, holdings: vHoldings, market: vMarket, watch: vWatch, learn: vLearn }[view] || vSteps)();
+  if (simple && !SIMPLE_VIEWS.includes(view)) view = 'today';
+  if (!simple && SIMPLE_VIEWS.includes(view)) view = 'steps';
+  document.body.classList.toggle('simple', simple);
+  v.innerHTML = ({ today: vToday, money: vMoney, help: vHelp, steps: vSteps, home: vHome, holdings: vHoldings, market: vMarket, watch: vWatch, learn: vLearn }[view] || vToday)();
   document.querySelectorAll('#tabbar button').forEach((b) => { if (b.dataset.v === view) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current'); });
   if (sheetState) renderSheet();
 }
@@ -565,6 +568,175 @@ function dailyPlan(c) {
     <div class="an-date">مبنية آلياً من الأرقام وملاحظات الأخبار، مو توصية مرخصة. القرار لك.</div>
   </section>`;
 }
+/* ═════════ الوضع البسيط (الأساسي) ═════════
+   ٣ تبويبات: اليوم، فلوسي، مساعدة — بدون مصطلحات. التفاصيل كلها في «الوضع المتقدم». */
+let simple = (() => { try { return localStorage.getItem('mahfazti.mode') !== 'advanced'; } catch { return true; } })();
+const SIMPLE_VIEWS = ['today', 'money', 'help'];
+const ICONS = {
+  today: '<circle cx="12" cy="12" r="9"/><path d="M8 12.5l2.5 2.5L16 9.5"/>',
+  money: '<path d="M3 7a2 2 0 0 1 2-2h13v2"/><rect x="3" y="7" width="18" height="13" rx="2"/><path d="M16 13.5h2"/>',
+  help: '<circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.6.3-1 .9-1 1.6V14"/><path d="M12 17.5h.01"/>',
+  steps: '<path d="M9 6h11M9 12h11M9 18h11"/><path d="M4 6l1 1 2-2M4 12l1 1 2-2M4 18l1 1 2-2"/>',
+  home: '<path d="M3 11l9-7 9 7v9a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1z"/>',
+  holdings: '<rect x="3" y="7" width="18" height="13" rx="2"/><path d="M8 7V5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M3 13h18"/>',
+  market: '<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>',
+  watch: '<path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>',
+  learn: '<path d="M4 5a2 2 0 0 1 2-2h13v16H6a2 2 0 0 0-2 2z"/><path d="M4 19V5M8 7h7"/>',
+};
+function renderTabs() {
+  const T = simple ? [['today', 'اليوم'], ['money', 'فلوسي'], ['help', 'مساعدة']]
+    : [['steps', 'خطواتي'], ['home', 'الرئيسية'], ['holdings', 'أسهمي'], ['market', 'السوق'], ['watch', 'المراقبة'], ['learn', 'تعلّم']];
+  $('#tabbar').className = 'tabbar' + (simple ? ' simple' : '');
+  $('#tabbar').innerHTML = T.map(([v, l]) => `<button data-v="${v}"${v === view ? ' aria-current="page"' : ''}><svg viewBox="0 0 24 24">${ICONS[v]}</svg><span>${l}</span></button>`).join('');
+}
+function setMode(adv) {
+  simple = !adv; try { localStorage.setItem('mahfazti.mode', adv ? 'advanced' : 'simple'); } catch {}
+  view = simple ? 'today' : 'steps'; closeSheet(); renderTabs(); render(); window.scrollTo({ top: 0 });
+  toast(simple ? 'رجعنا للوضع البسيط' : 'فتحت الوضع المتقدم');
+}
+const KIND = { 'بنوك ومالية': 'بنك', 'اتصالات وتقنية': 'شركة اتصالات', 'طاقة ومواد': 'شركة طاقة', 'إسمنت': 'شركة إسمنت' };
+function plainKind(code) { const k = KIND[TICK.find((t) => t.code === code)?.sector] || 'شركة'; return k === 'بنك' ? 'بنك كبير ومستقر' : k + ' كبيرة ومستقرة'; }
+function dayWord(p, live) { if (p == null || Math.abs(p) < 0.05) return 'ما تحرك'; return `${p > 0 ? 'طلع' : 'نزل'} ${live ? 'اليوم' : 'آخر جلسة'} ${num(Math.abs(p).toFixed(1) + '%')}`; }
+function moneyCard(c, label) {
+  const ses = session(); const when = ses.live ? 'اليوم' : 'آخر جلسة';
+  const d = c.day;
+  return `<section class="s-money"><div class="s-lbl">${label}</div>
+    <div class="s-total">${fmt(c.total, 0)} <span class="cur">ريال</span></div>
+    <div class="s-line">${Math.abs(d) < 0.5 ? `${when}: ما تغيّرت تقريباً` : d > 0 ? `<span class="up-t">${when}: زادت ${num(fmt(d, 0))} ريال ▲</span>` : `<span class="down-t">${when}: نقصت ${num(fmt(-d, 0))} ريال ▼</span>`}</div>
+    <div class="s-line s-muted">منها ${num(fmt(S.cash, 0))} ريال كاش جاهز</div></section>`;
+}
+function orderForm(s) {
+  return `<div class="oform">
+    <div class="of-h">انقلها كذا في نموذج الأمر بالأهلي تداول</div>
+    <div class="of-row"><span>شراء أو بيع</span><b class="of-side ${s.side}">${s.side === 'buy' ? 'شراء' : 'بيع'}</b></div>
+    <div class="of-row"><span>اسم الشركة</span><b>${esc(Q(s.code)?.n || s.code)} <button class="of-copy sm" data-act="copy-val" data-val="${s.code}">${s.code}<i>نسخ</i></button></b></div>
+    <div class="of-row"><span>نوع الأمر</span><b>سعر محدد</b></div>
+    <div class="of-row"><span>الكمية</span><button class="of-copy" data-act="copy-val" data-val="${s.qty}">${s.qty}<i>نسخ</i></button></div>
+    <div class="of-row"><span>السعر</span><button class="of-copy" data-act="copy-val" data-val="${s.price}">${fmt(s.price)}<i>نسخ</i></button></div>
+    <div class="of-send">وبعدها اضغط «إرسال» وأكّد ✓</div>
+  </div>`;
+}
+function simpleStep(s, i) {
+  const P = s.plain || { title: s.title, why: s.why };
+  let btns = '';
+  if (s.kind === 'check') btns = `<button class="btn pri big" data-act="step-ok" data-id="${s.id}">✓ تأكدت</button>`;
+  else if (s.kind === 'confirm') btns = `<button class="btn pri big" data-act="s-done" data-id="${s.id}">✓ إيه انباعت</button><button class="btn" data-act="step-skip" data-id="${s.id}">لا، للحين</button>`;
+  else if (s.resting) btns = `<button class="btn pri big" data-act="step-placed" data-id="${s.id}">✓ حطيت الطلب</button><button class="btn" data-act="s-done" data-id="${s.id}">انباعت على طول</button>`;
+  else if (s.kind === 'order') btns = `<button class="btn pri big" data-act="s-done" data-id="${s.id}">✓ سويتها</button><button class="btn" data-act="step-skip" data-id="${s.id}">ما قدرت اليوم</button>`;
+  return `<article class="s-step ${s.tone}">
+    <div class="s-step-top"><span class="s-step-n">${s.kind === 'wait' ? '⏳' : num(i + 1)}</span><h3>${P.title}</h3></div>
+    <div class="s-why">${P.why}</div>
+    ${s.kind === 'order' ? orderForm(s) + `<div class="s-tip">💡 ${s.side === 'buy' ? 'هذا أغلى سعر نقبله، وغالباً بتشتري بأرخص منه.' : 'هذا أرخص سعر نقبله، وغالباً بتبيع بأغلى منه.'} حط الطلب بعد الساعة ١٠:١٥ الصبح.</div>` : ''}
+    ${btns ? `<div class="s-btns">${btns}</div>` : ''}
+    ${s.exit ? `<button class="linkbtn" data-act="keep-holding" data-code="${s.code}">ما أبي أبيعه</button>` : ''}
+  </article>`;
+}
+function simpleIntro(c) {
+  const B = pickBasket(coreScreen()); const deploy = Math.max(0, S.cash - 0.1 * c.total);
+  return `<section class="s-card s-intro">
+    <h2>خلني أمسك عنك 🤝</h2>
+    <div class="s-sub">كل يوم أقول لك وش تسوي بالضبط، وأنت بس تنفّذ في الأهلي تداول.</div>
+    <div class="s-points">
+      <div><span>🧺</span><div><b>نجمع فلوسك في ٥ شركات كبيرة ومستقرة</b><br>${B.map((code) => esc(Q(code)?.n || code)).join('، ')}. كلها توزع أرباح كل سنة.</div></div>
+      <div><span>📅</span><div><b>نشتري مرة كل شهر بمبلغ ثابت</b><br>حوالي ${num(fmt(deploy / 4, 0))} ريال بالشهر. ما نحاول نخمّن متى السوق يطلع أو ينزل.</div></div>
+      <div><span>🧹</span><div><b>أسهمك الضعيفة نبيعها بهدوء</b><br>خلال أسبوعين، وبسعر أعلى من سعرها اليوم إذا قدرنا.</div></div>
+      <div><span>🛡️</span><div><b>نخلي ١٠٪ من فلوسك كاش دايم</b><br>ولا تحط فلوس تحتاجها خلال سنة.</div></div>
+    </div>
+    <div class="s-warn">⚠️ ما فيه ربح مضمون. فيه شهور بتشوف فلوسك نازلة، وهذا طبيعي. هذي خطة سنين.</div>
+    <button class="btn pri block big" data-act="approve-plan">تمام، ابدأ</button>
+    <button class="linkbtn" data-act="rules-full">اقرأ القواعد كاملة</button>
+  </section>`;
+}
+function vToday() {
+  const c = calc(), P = S.plan, ses = session();
+  if (!S.holdings.length && !S.cash) return `<section class="s-head"><h2>أهلاً 👋</h2><div class="s-sub">أول شي نحمّل محفظتك.</div></section>${vaultCard()}`;
+  const hr = new Date(Date.now() + 3 * 3600e3).getUTCHours();
+  const top = moneyCard(c, `${hr < 12 ? 'صباح الخير' : 'مساء الخير'} · فلوسك كلها`);
+  if (!P.approved) return top + simpleIntro(c);
+  syncPlan();
+  const steps = planSteps(c), act = steps.filter((x) => x.kind !== 'wait');
+  const stale = M?.marketTime && Date.now() / 1000 - M.marketTime > 4 * 86400;
+  const mo = P.month; const nextM = AR_MONTHS[+ses.key.slice(5, 7) % 12];
+  return `${top}
+    ${stale ? '<div class="s-warn">⚠️ الأسعار عندي قديمة. لا تنفّذ شي لين تتحدث (اضغط ↻ فوق).</div>' : ''}
+    <section class="s-head"><h2>${act.length ? 'وش تسوي اليوم؟' : 'اليوم ما عليك شي ✓'}</h2>
+      <div class="s-sub">${ses.live ? 'جلسة اليوم' : 'الجلسة الجاية'}: ${ses.label}${act.length ? ` · ${num(act.length)} ${act.length === 1 ? 'خطوة' : 'خطوات'} بالترتيب` : ''}</div></section>
+    ${steps.length ? steps.map(simpleStep).join('') : '<div class="s-calm"><div class="s-big">☕</div><b>ارتاح</b><div>ما فيه شي تسويه. وإذا صار شي بقول لك الساعة ١٠ الصبح.</div></div>'}
+    <div class="s-next">📅 ${mo?.picks?.length && !mo.picks.every((x) => x.done) ? `شراء ${ses.monthName}: ${mo.picks.map((x) => esc(Q(x.code)?.n || x.code)).join(' و')}` : `الشراء الجاي: أول جلسة في ${nextM}`}<br>🔔 تنبيه كل يوم تداول الساعة ١٠ الصبح<br>🔄 الأسعار تتحدث كل دقيقة وقت السوق</div>
+    ${foot()}`;
+}
+function vMoney() {
+  const c = calc(), P = S.plan;
+  if (!S.holdings.length && !S.cash) return vaultCard();
+  const role = (h) => !P.approved ? null : P.basket.includes(h.code) ? ['gain', 'نجمع فيه'] : h.keep ? ['warn', 'تركته'] : ['loss', 'بنبيعه'];
+  const live = session().live; const scr = P.approved ? coreScreen() : [];
+  return `${moneyCard(c, 'فلوسك كلها')}
+    <div class="s-cards">
+      <div class="s-card s-cash"><div><b>💵 كاش جاهز</b><div class="s-sub">فلوس في حسابك ما استخدمناها للحين</div></div><div class="s-amt">${fmt(S.cash, 0)}</div></div>
+      ${c.H.sort((a, b) => b.value - a.value).map((h) => { const r = role(h); return `<button class="s-card s-hold" data-act="shold" data-code="${h.code}">
+        <div class="s-hold-top"><b>${esc(nameOf(h))}</b>${r ? `<span class="vchip ${r[0]}">${r[1]}</span>` : ''}</div>
+        <div class="s-hold-row"><span>عندك ${num(h.qty)} سهم</span><span>قيمتها ${num(fmt(h.value, 0))} ريال</span></div>
+        <div class="s-hold-row">${h.pnl >= 0 ? `<span class="up-t">ربحان ${num(fmt(h.pnl, 0))} ريال</span>` : `<span class="down-t">خسران ${num(fmt(-h.pnl, 0))} ريال</span>`}<span class="s-sub">${dayWord(h.dayPct, live)}</span></div>
+      </button>`; }).join('')}
+    </div>
+    ${P.approved ? `<section class="s-card"><h2>🧺 سلّتك: الشركات الخمس</h2><div class="s-sub">هذي اللي نشتري منها شوي كل شهر.</div>
+      ${P.basket.map((code) => { const x = scr.find((o) => o.code === code); const h = c.H.find((y) => y.code === code);
+        return `<div class="s-bask"><div><b>${esc(Q(code)?.n || code)}</b><div class="s-sub">${plainKind(code)} · توزع ${num(((x?.yl || 0) * 100).toFixed(1) + '%')} بالسنة</div></div><span class="vchip ${h ? 'gain' : 'warn'}">${h ? 'عندك' : 'بالدور'}</span></div>`; }).join('')}
+    </section>` : ''}
+    ${histCard()}${foot()}`;
+}
+function shHold(st) {
+  const code = st.code, q = Q(code), h = calc().H.find((x) => x.code === code), P = S.plan;
+  const inB = P.basket?.includes(code);
+  const say = !P.approved ? 'لما تبدأ الخطة بقول لك وش نسوي فيه.' : inB ? 'هذا من سلّتك. نجمع فيه على المدى الطويل، وما نبيعه عشان نزل.' : h?.keep ? 'طلّعته من الخطة، فما راح أطلب منك تبيعه.' : `أرقام هالشركة ضعيفة (${esc(failsOf(code)[0] || '')})، فالخطة تبيعه بهدوء.`;
+  return `<div class="sh-h"><div><h2>${esc(q?.n || code)}</h2><div class="code">${code}</div></div><button class="btn ghost" data-act="close">إغلاق</button></div>
+    ${h ? `<div class="kv"><div class="cell"><div class="k">عندك</div><div class="v">${num(h.qty)} سهم</div></div><div class="cell"><div class="k">سعره الحين</div><div class="v">${fmt(h.p)}</div></div>
+      <div class="cell"><div class="k">اشتريته بمتوسط</div><div class="v">${fmt(h.cost)}</div></div><div class="cell"><div class="k">${h.pnl >= 0 ? 'ربحك' : 'خسارتك'}</div><div class="v ${h.pnl >= 0 ? 'up' : 'down'}-t">${fmt(Math.abs(h.pnl), 0)} ريال</div></div></div>` : ''}
+    <div class="s-card"><b>وش الخطة فيه؟</b><div>${say}</div></div>
+    ${q?.c ? `<div class="chart">${bigChart(q, 130, h ? [{ v: h.cost, col: 'var(--faint)' }] : [])}</div><div class="s-sub">الخط الرمادي المتقطع: سعر شرايك. الذهبي: متوسط سعر آخر ٥٠ يوم.</div>` : ''}`;
+}
+function vHelp() {
+  const ex = { side: 'buy', code: '7020', qty: 11, price: 56.90 };
+  const qa = [
+    ['هل الربح مضمون؟', 'لا. ما أحد يقدر يضمن ربح في الأسهم. الخطة تحاول تقلل المخاطرة: شركات كبيرة، شراء بالتدريج، وكاش احتياط. بس فيه شهور بتشوف فلوسك نازلة.'],
+    ['ليش ما نشتري بكل الفلوس مرة وحدة؟', 'لأن ما أحد يعرف إذا السوق بينزل بكرة. لما نشتري شوي كل شهر، نشتري أرخص لما السوق نازل، وما نندم لو نزل بعد ما اشترينا كل شي.'],
+    ['ليش نبيع سهم وأنا خسران فيه؟', 'الخسارة صارت خلاص، والبيع ما يزيدها. السؤال: وين فلوسك تشتغل أحسن من اليوم؟ في شركة أرقامها ضعيفة، ولا في شركة قوية توزع أرباح؟'],
+    ['وش يصير لو السوق نزل كثير؟', 'ولا شي يتغير. الخطة ما تبيع شركات السلة عشان نزلت، وتكمل الشراء الشهري، فتشتري أرخص.'],
+    ['ما قدرت أنفّذ الخطوة اليوم؟', 'عادي. اضغط «ما قدرت اليوم» وترجع لك الجلسة الجاية بسعر جديد.'],
+    ['ما ودي أبيع سهم معيّن؟', 'تحت خطوة البيع فيه «ما أبي أبيعه». تضغطه وأطلّعه من الخطة.'],
+    ['متى يجيني التنبيه؟', 'كل يوم تداول (الأحد إلى الخميس) الساعة ١٠ الصبح.'],
+  ];
+  const words = [
+    ['سهم', 'جزء صغير من شركة. لما تشتري سهم، تصير شريك صغير فيها.'],
+    ['محفظة', 'كل الأسهم اللي عندك مع الكاش.'],
+    ['كاش', 'فلوس في حسابك الاستثماري ما اشتريت فيها شي.'],
+    ['توزيعات', 'جزء من أرباح الشركة تعطيك إياه كل كم شهر، بدون ما تبيع.'],
+    ['أمر «سعر محدد»', 'تقول للأهلي تداول: اشتر بهالسعر أو أرخص، أو بيع بهالسعر أو أغلى.'],
+    ['حد الأمان', 'سعر لو نزل له السهم نبيعه، عشان ما تكبر الخسارة.'],
+    ['تنفّذ', 'يعني طلبك صار فعلاً والصفقة تمت.'],
+    ['معلّق', 'طلب ما تنفّذ للحين. الأسهم اللي فيه محجوزة لين تلغيه أو يتنفّذ.'],
+    ['السلة', 'الشركات الخمس اللي نجمع فيها فلوسك شوي شوي.'],
+  ];
+  return `<section class="s-head"><h2>مساعدة</h2><div class="s-sub">كل اللي تحتاجه بكلام بسيط.</div></section>
+    <details class="s-acc" open><summary>كيف أحط طلب في الأهلي تداول؟</summary>
+      <ol class="s-ol"><li>افتح تطبيق الأهلي تداول وادخل «منصة التداول».</li><li>انزل لنموذج الأمر تحت الشاشة.</li><li>انقل الأرقام من «محفظتي 1» زي المثال تحت بالضبط.</li><li>اضغط «إرسال» وأكّد.</li><li>ارجع لـ«محفظتي 1» واضغط «✓ سويتها».</li></ol>
+      <div class="s-sub">مثال:</div>${orderForm(ex)}</details>
+    <details class="s-acc"><summary>قاموس الكلمات</summary><dl class="s-dict">${words.map(([w, d]) => `<dt>${w}</dt><dd>${d}</dd>`).join('')}</dl></details>
+    ${qa.map(([q, a]) => `<details class="s-acc"><summary>${q}</summary><p>${a}</p></details>`).join('')}
+    <section class="s-card"><b>الوضع المتقدم</b><div class="s-sub">فيه التحليل الكامل والرسومات وكل أسهم السوق. للي يعرف أسهم.</div><button class="btn block" data-act="mode-adv">افتح الوضع المتقدم</button></section>
+    ${foot()}`;
+}
+function likelyPx(s) { const p = Q(s.code)?.p; if (!p) return s.price; return s.side === 'buy' ? Math.min(s.price, p) : Math.max(s.price, p); }
+function shSDone(st) {
+  const s = st.step;
+  if (st.edit) return shFill(st);
+  const px = likelyPx(s);
+  return `<div class="sh-h"><h2>${s.side === 'buy' ? 'اشتريت' : 'بعت'} ${esc(Q(s.code)?.n || s.code)}؟</h2><button class="btn ghost" data-act="close">إغلاق</button></div>
+    <div class="s-sub">تأكد إنه طلع في «موجودات المحفظة» بالأهلي تداول.</div>
+    <button class="btn pri block big" data-act="sdone-same">✓ إيه، ${num(s.qty)} سهم بسعر ${num(fmt(px))} تقريباً</button>
+    <button class="btn block" data-act="sdone-edit">الكمية أو السعر كان غير</button>`;
+}
+
 /* ═════════ خطة الطيار الآلي ═════════
    ١) سلة جودة: ٥ شركات كبيرة هادئة توزع أرباح، تختارها قواعد ثابتة
    ٢) شراء شهري منتظم (السيولة تنقسم على عدد أشهر)
@@ -656,7 +828,8 @@ function planSteps(c) {
   let dirty = false;
   const px = (id, v) => { const k = id + '#px', r = P.steps[k]; if (r && r.d === ses.date) return r.v; P.steps[k] = { d: ses.date, v }; dirty = true; return v; };
   if (!st('check-orders')) out.push({ id: 'check-orders', kind: 'check', tone: 'warn', title: 'افتح «الأوامر» في الأهلي تداول وتأكد ما فيه أوامر قديمة معلقة',
-    why: 'أي سهم كميته «معلقة» ما تقدر تبيعه لين تلغي أمره القديم. إذا لقيت أمر ما تعرفه أو ما تبيه، ألغه. هذي خطوة مرة وحدة بس.' });
+    why: 'أي سهم كميته «معلقة» ما تقدر تبيعه لين تلغي أمره القديم. إذا لقيت أمر ما تعرفه أو ما تبيه، ألغه. هذي خطوة مرة وحدة بس.',
+    plain: { title: 'قبل كل شي: تأكد ما عندك طلبات قديمة', why: 'افتح «الأوامر» في الأهلي تداول. لو لقيت طلب قديم ما تعرفه، ألغه. تسويها مرة وحدة بس.' } });
   // ١. الوقف المكسور
   for (const h of c.H) {
     if (h.stop == null || h.p == null || h.p > h.stop) continue;
@@ -665,7 +838,8 @@ function planSteps(c) {
     out.push({ id, kind: 'order', side: 'sell', code: h.code, qty: h.qty, price, tone: 'loss',
       title: `بيع كل أسهمك في ${esc(nm(h.code))}: ${num(h.qty)} سهم`,
       why: `السعر ${num(fmt(h.p))} تحت وقف الخسارة اللي حددته ${num(fmt(h.stop))}. القاعدة: الوقف ينفّذ بدون نقاش.`,
-      result: `يرجع لك تقريباً ${num(fmt(h.qty * price * (1 - FEE), 0))} ريال (${h.pnl >= 0 ? 'ربح' : 'خسارة'} ${num(fmt(Math.abs(h.pnl), 0))} ريال).` });
+      result: `يرجع لك تقريباً ${num(fmt(h.qty * price * (1 - FEE), 0))} ريال (${h.pnl >= 0 ? 'ربح' : 'خسارة'} ${num(fmt(Math.abs(h.pnl), 0))} ريال).`,
+      plain: { title: `بيع أسهمك في ${esc(nm(h.code))}`, why: h.pnl >= 0 ? `سعرها نزل تحت حد الأمان اللي حددناه، فنبيع وأنت للحين ربحان ${num(fmt(h.pnl, 0))} ريال.` : 'سعرها نزل تحت حد الأمان اللي حددناه، فنبيع قبل ما تكبر الخسارة.' } });
   }
   // ٢. الخروج المنظم للأسهم برا السلة
   for (const h of c.H) {
@@ -679,19 +853,23 @@ function planSteps(c) {
       out.push({ id: id + '-now', kind: 'order', side: 'sell', code: h.code, qty: h.qty, price, tone: 'loss', exit: true,
         title: `بيع ${num(h.qty)} سهم من ${esc(nm(h.code))} اليوم`,
         why: (h.p <= E.floor ? `نزل تحت حد الحماية ${num(fmt(E.floor))}، فنطلع قبل ما يزيد النزول.` : 'خلصت مهلة الأسبوعين بدون ما يوصل سعر البيع، فنطلع ونحوّل الفلوس للسلة.') + (placed ? ' ألغِ أمر البيع القديم أول.' : ''),
-        result: `يرجع لك تقريباً ${num(fmt(h.qty * price * (1 - FEE), 0))} ريال.` });
+        result: `يرجع لك تقريباً ${num(fmt(h.qty * price * (1 - FEE), 0))} ريال.`,
+        plain: { title: `بيع أسهمك في ${esc(nm(h.code))} اليوم`, why: (h.p <= E.floor ? 'سعرها نزل أكثر من الحد اللي حطيناه، فنطلع الحين.' : 'مرّ أسبوعين وما انباعت بالسعر اللي نبيه، فنبيعها بسعر اليوم ونحط الفلوس في سلتك.') + (placed ? ' وقبلها ألغِ أمر البيع القديم من «الأوامر».' : '') } });
     } else if (placed && h.p >= E.sellAt) {
       if (hidden(id)) continue;
       out.push({ id, kind: 'confirm', side: 'sell', code: h.code, qty: h.qty, price: E.sellAt, tone: 'gain',
-        title: `غالباً أمر بيع ${esc(nm(h.code))} تنفّذ عند ${num(fmt(E.sellAt))}`, why: 'السعر وصل سعر البيع اللي حطيناه. افتح محفظتك في الأهلي تداول وتأكد.' });
+        title: `غالباً أمر بيع ${esc(nm(h.code))} تنفّذ عند ${num(fmt(E.sellAt))}`, why: 'السعر وصل سعر البيع اللي حطيناه. افتح محفظتك في الأهلي تداول وتأكد.',
+        plain: { title: `غالباً انباعت أسهمك في ${esc(nm(h.code))}`, why: `سعرها وصل ${num(fmt(E.sellAt))}، السعر اللي عرضناها فيه. افتح «موجودات المحفظة» في الأهلي تداول وتأكد.` } });
     } else if (placed) {
       out.push({ id: id + '-wait', kind: 'wait', tone: 'info', title: `أمر بيع ${esc(nm(h.code))} قائم عند ${num(fmt(E.sellAt))}`,
-        why: `ما عليك شي اليوم. باقي ${num(left)} جلسات من المهلة. إذا الأهلي تداول ألغى الأمر آخر اليوم، حطه من جديد بنفس السعر. ولو نزل تحت ${num(fmt(E.floor))} بقول لك تطلع.` });
+        why: `ما عليك شي اليوم. باقي ${num(left)} جلسات من المهلة. إذا الأهلي تداول ألغى الأمر آخر اليوم، حطه من جديد بنفس السعر. ولو نزل تحت ${num(fmt(E.floor))} بقول لك تطلع.`,
+        plain: { title: `أسهمك في ${esc(nm(h.code))} معروضة للبيع`, why: `ما عليك شي. ننتظر سعرها يوصل ${num(fmt(E.sellAt))}، وباقي ${num(left)} أيام. لو اختفى طلبك من «الأوامر» آخر اليوم، حطه من جديد بنفس الأرقام.` } });
     } else {
       out.push({ id, kind: 'order', resting: true, side: 'sell', code: h.code, qty: h.qty, price: E.sellAt, tone: 'warn', exit: true,
         title: `حط أمر بيع ${num(h.qty)} سهم من ${esc(nm(h.code))} بسعر ${num(fmt(E.sellAt))}`,
         why: `السهم برا سلة الجودة (${reason}). ما نبيعه عند القاع: نحط أمر بيع أعلى من سعره الحالي ${num(fmt(h.p))} ونعطيه أسبوعين يرتد. وإذا نزل تحت ${num(fmt(E.floor))} نطلع فوراً.`,
-        result: `لو تنفّذ: يرجع لك تقريباً ${num(fmt(h.qty * E.sellAt * (1 - FEE), 0))} ريال.` });
+        result: `لو تنفّذ: يرجع لك تقريباً ${num(fmt(h.qty * E.sellAt * (1 - FEE), 0))} ريال.`,
+        plain: { title: `اعرض أسهمك في ${esc(nm(h.code))} للبيع`, why: `أرقام هالشركة ضعيفة، فبنطلع منها بهدوء. نعرضها بسعر أعلى شوي من سعرها اليوم (${num(fmt(h.p))}) وننتظر أسبوعين. لو نزلت كثير بقول لك تبيع على طول.` } });
     }
   }
   // ٣. شراء الشهر
@@ -705,7 +883,8 @@ function planSteps(c) {
       out.push({ id, kind: 'order', side: 'buy', code: pk.code, qty, price, tone: 'gain', pick: i,
         title: `اشتر ${num(qty)} سهم من ${esc(nm(pk.code))}`,
         why: `شراء ${ses.monthName} من سلة الجودة (${num(fmt(mo.amount, 0))} ريال هالشهر). ${esc(nm(pk.code))}: توزيعات ${num(((x?.yl || 0) * 100).toFixed(1) + '%')} وربحية ${num((((x?.roe) || 0) * 100).toFixed(0) + '%')}، ومن أهدى الأسهم حركة. نشتري كل شهر بانتظام بدون ما نحاول نصيد القاع.`,
-        result: `المبلغ تقريباً ${num(fmt(qty * price * (1 + FEE), 0))} ريال كحد أعلى.` });
+        result: `المبلغ تقريباً ${num(fmt(qty * price * (1 + FEE), 0))} ريال كحد أعلى.`,
+        plain: { title: `اشتر ${num(qty)} سهم من ${esc(nm(pk.code))}`, why: `هذا شراء ${ses.monthName} من سلّتك. ${esc(nm(pk.code))} ${plainKind(pk.code)}، ويوزع أرباح حوالي ${num(((x?.yl || 0) * 100).toFixed(1) + '%')} من سعره كل سنة.` } });
     });
   }
   if (dirty) save();
@@ -966,7 +1145,7 @@ const LESSONS = [
   ['RSI وش يعني؟', 'مقياس من ٠ إلى ١٠٠ لسرعة حركة السعر في آخر ١٤ جلسة. فوق ٧٠: صعد بسرعة كبيرة. تحت ٣٠: نزل بسرعة كبيرة.', 'مو إشارة شراء أو بيع لحاله. سهم ممكن يظل فوق ٧٠ أسابيع وهو يصعد.'],
 ];
 function vLearn() {
-  return `<div class="sec-h"><h2>تعلّم</h2></div>
+  return `<div class="sec-h"><h2>تعلّم</h2><button class="btn" data-act="mode-simple">الوضع البسيط</button></div>
   ${LESSONS.map((l, i) => `<details ${i === 0 ? 'open' : ''}><summary>${l[0]}</summary><p>${l[1]}</p><div class="eg">${l[2]}</div></details>`).join('')}
   <details><summary>من وين تجي الأسعار؟</summary><p>من Yahoo Finance. تتحدث تلقائياً كل ٥ دقائق تقريباً وقت التداول (الأحد إلى الخميس، ١٠ الصبح إلى ٣ العصر)، وفيها تأخير حوالي ١٥ دقيقة عن السوق.</p><div class="eg">للتنفيذ الفعلي اعتمد دايماً على السعر في تطبيق وسيطك.</div></details>
   ${foot()}`;
@@ -984,6 +1163,9 @@ function renderSheet() {
   else if (st.type === 'settings') b.innerHTML = shSettings(st);
   else if (st.type === 'import') b.innerHTML = shImport(st);
   else if (st.type === 'fill') b.innerHTML = shFill(st);
+  else if (st.type === 'sdone') b.innerHTML = shSDone(st);
+  else if (st.type === 'shold') b.innerHTML = shHold(st);
+  else if (st.type === 'rules') b.innerHTML = rulesCard(calc());
 }
 
 function shDetail(st) {
@@ -1094,6 +1276,8 @@ function shSettings(st) {
   const json = JSON.stringify(S);
   const ios = /iphone|ipad|ipod/i.test(navigator.userAgent);
   return `<div class="sh-h"><h2>الإعدادات</h2><button class="btn ghost" data-act="close">إغلاق</button></div>
+  <div class="s-card"><b>${simple ? 'أنت على الوضع البسيط' : 'أنت على الوضع المتقدم'}</b><div class="s-sub">${simple ? 'المتقدم فيه التحليل الكامل والرسومات وكل أسهم السوق.' : 'البسيط فيه خطواتك بس، بدون مصطلحات.'}</div>
+    <button class="btn block" data-act="${simple ? 'mode-adv' : 'mode-simple'}">${simple ? 'افتح الوضع المتقدم' : 'ارجع للوضع البسيط'}</button></div>
   <form class="form" id="cashForm"><label class="field">السيولة النقدية (ريال)<input id="f-cash" class="n" inputmode="decimal" value="${S.cash ?? ''}"></label>
     <button class="btn pri block" type="submit">حفظ السيولة</button></form>
   ${S.plan?.approved ? `<form class="form" id="planForm"><b>إعدادات الخطة</b>
@@ -1144,8 +1328,16 @@ document.addEventListener('click', async (e) => {
       const k = st.type === 'holding' ? 'holdings' : 'watch'; S[k] = S[k].filter((x) => x.id !== st.id); save(); closeSheet(); render(); toast('انحذف'); break;
     }
     case 'approve-plan': {
-      S.plan = Object.assign(planDefaults(), { approved: session().date }); save(); syncPlan(); render(); window.scrollTo({ top: 0 }); toast('بدأت الخطة'); break;
+      S.plan = Object.assign(planDefaults(), { approved: session().date }); save(); syncPlan(); closeSheet(); render(); window.scrollTo({ top: 0 }); toast(simple ? 'بدأنا! هذي خطواتك' : 'بدأت الخطة'); break;
     }
+    case 'rules-full': openSheet({ type: 'rules' }); break;
+    case 'mode-adv': setMode(true); break;
+    case 'mode-simple': setMode(false); break;
+    case 'shold': openSheet({ type: 'shold', code: t.dataset.code }); break;
+    case 's-done': { const stp = planSteps(calc()).find((x) => x.id === t.dataset.id); if (stp) openSheet({ type: 'sdone', step: stp }); break; }
+    case 'sdone-same': applyFill(st.step, st.step.qty, likelyPx(st.step)); closeSheet(); render(); toast('تمام! حدّثت فلوسك ✓'); break;
+    case 'sdone-edit': st.edit = true; renderSheet(); break;
+    case 'copy-val': { const val = t.dataset.val; try { await navigator.clipboard.writeText(val); toast('انسخ: ' + val); } catch { toast(val); } break; }
     case 'step-ok': S.plan.steps[t.dataset.id] = { s: 'done', d: session().date }; save(); render(); break;
     case 'step-skip': S.plan.steps[t.dataset.id + '#skip'] = { s: 'skip', d: session().date }; save(); render(); toast('تمام، بنرجع لها الجلسة الجاية'); break;
     case 'step-placed': S.plan.steps[t.dataset.id] = { s: 'placed', d: session().date }; save(); render(); toast('ممتاز. بتابعه لك كل يوم'); break;
@@ -1260,7 +1452,10 @@ function readImportHash() {
 
 /* ───────── التشغيل ───────── */
 async function boot() {
-  const h = location.hash.slice(1); if (['steps', 'home', 'holdings', 'market', 'watch', 'learn'].includes(h)) view = h;
+  const h = location.hash.slice(1); if (['today', 'money', 'help', 'steps', 'home', 'holdings', 'market', 'watch', 'learn'].includes(h)) view = h;
+  if (simple && !SIMPLE_VIEWS.includes(view)) view = 'today';
+  if (!simple && SIMPLE_VIEWS.includes(view)) view = 'steps';
+  renderTabs();
   const imp = readImportHash();
   try { TICK = await (await fetch('data/tickers.json')).json(); } catch { TICK = []; }
   try { NOTES = await (await fetch('data/notes.json?t=' + Date.now())).json(); } catch { NOTES = {}; }

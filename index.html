@@ -17,7 +17,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@400;500;600;700&family=Readex+Pro:wght@500;600;700&family=IBM+Plex+Mono:wght@500;600&display=swap">
-<link rel="stylesheet" href="app.css?v=10">
+<link rel="stylesheet" href="app.css?v=11">
 </head>
 <body>
 <div class="app">
@@ -45,20 +45,7 @@
     <div class="loading"><span class="spin"></span> جاري تحميل الأسعار…</div>
   </main>
 
-  <nav class="tabbar" id="tabbar">
-    <button data-v="steps" aria-current="page">
-      <svg viewBox="0 0 24 24"><path d="M9 6h11M9 12h11M9 18h11"/><path d="M4 6l1 1 2-2M4 12l1 1 2-2M4 18l1 1 2-2"/></svg><span>خطواتي</span></button>
-    <button data-v="home">
-      <svg viewBox="0 0 24 24"><path d="M3 11l9-7 9 7v9a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1z"/></svg><span>الرئيسية</span></button>
-    <button data-v="holdings">
-      <svg viewBox="0 0 24 24"><rect x="3" y="7" width="18" height="13" rx="2"/><path d="M8 7V5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M3 13h18"/></svg><span>أسهمي</span></button>
-    <button data-v="market">
-      <svg viewBox="0 0 24 24"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg><span>السوق</span></button>
-    <button data-v="watch">
-      <svg viewBox="0 0 24 24"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg><span>المراقبة</span></button>
-    <button data-v="learn">
-      <svg viewBox="0 0 24 24"><path d="M4 5a2 2 0 0 1 2-2h13v16H6a2 2 0 0 0-2 2z"/><path d="M4 19V5M8 7h7"/></svg><span>تعلّم</span></button>
-  </nav>
+  <nav class="tabbar simple" id="tabbar"></nav>
 </div>
 
 <div class="scrim" id="scrim" hidden></div>
@@ -68,6 +55,6 @@
 </section>
 <div class="toast" id="toast" hidden></div>
 
-<script src="app.js?v=10"></script>
+<script src="app.js?v=11"></script>
 </body>
 </html>
