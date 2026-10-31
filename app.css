@@ -288,3 +288,34 @@ details .eg{background:var(--surface-2);border-radius:10px;padding:8px 12px;marg
 
 .cl summary{display:block}
 .clv{font-weight:600;font-size:.8rem;font-variant-numeric:tabular-nums;color:var(--fg)}
+
+/* steps / autopilot */
+.tabbar button{max-width:120px;font-size:.66rem}
+.steps-head{display:flex;flex-direction:column;gap:2px;padding:4px 2px}
+.steps-head .lbl{font-size:.78rem;color:var(--gold);font-weight:700}
+.steps-head h2{font-size:1.45rem}
+.step{background:var(--surface);border-radius:var(--r);box-shadow:var(--shadow);padding:14px;display:flex;flex-direction:column;gap:8px;border-inline-start:5px solid var(--line)}
+.step.gain{border-inline-start-color:var(--gain)} .step.loss{border-inline-start-color:var(--loss)} .step.warn{border-inline-start-color:var(--warn)} .step.info{border-inline-start-color:var(--info)}
+.step-h{display:flex;align-items:center;gap:8px}
+.step-n{width:28px;height:28px;border-radius:50%;background:var(--fg);color:var(--bg);display:grid;place-items:center;font-weight:700;font-size:.85rem}
+.step h3{font-size:1.08rem;line-height:1.5}
+.step-order{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;text-align:center}
+.step-order div{background:var(--surface-2);border-radius:10px;padding:6px 4px}
+.step-order span{display:block;font-size:.68rem;color:var(--muted)}
+.step-order b{font-family:var(--f-num);font-size:1.05rem}
+.how{background:var(--surface-2);border-radius:12px;padding:8px 12px;box-shadow:none}
+.how summary{font-family:var(--f-body);font-size:.85rem;font-weight:700;color:var(--pine)}
+.how summary::after{content:""}
+.how ol{margin:8px 0 6px;padding-inline-start:20px;font-size:.86rem;line-height:1.8}
+.step .actions{justify-content:flex-start}
+.linkbtn{border:0;background:none;color:var(--muted);font-size:.75rem;text-decoration:underline;align-self:flex-start;padding:0}
+.steps-banner{display:flex;justify-content:space-between;align-items:center;gap:8px;border:1.5px solid var(--line);background:var(--surface);border-radius:14px;padding:12px 14px;width:100%;text-align:inherit;color:var(--fg)}
+.steps-banner.on{border-color:var(--gold);background:var(--gold-soft)}
+.steps-banner span{font-size:.8rem;color:var(--muted);white-space:nowrap}
+.rules-card h2{font-size:1.15rem}
+.rules-list{margin:4px 0;padding-inline-start:20px;display:flex;flex-direction:column;gap:8px;font-size:.88rem;line-height:1.7}
+.basket{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
+.bchip{background:var(--pine-soft);border-radius:999px;padding:3px 10px;font-size:.8rem;font-weight:600}
+.bchip small{color:var(--muted);font-weight:500}
+.journal{display:flex;flex-direction:column;gap:6px}
+.jrow{display:flex;gap:8px;align-items:flex-start;font-size:.85rem}
