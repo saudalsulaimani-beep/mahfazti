@@ -4,11 +4,6 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
-    inputs:
-      test_hop:
-        description: "اختبار: يطلق دورة وحدة إضافية حتى خارج وقت التداول"
-        type: boolean
-        default: false
   schedule:
     # بدايات احتياطية للسلسلة. الجدولة المجانية في GitHub تتأخر وتسقط كثير، فالاعتماد الأساسي على السلسلة نفسها
     - cron: "50 6 * * 0-4"
@@ -70,24 +65,17 @@ jobs:
       - id: deploy
         uses: actions/deploy-pages@v4
 
-      - name: الدورة الجاية بعد ٥ دقائق (وقت التداول بس)
+      - name: تأكد إن حلقة الأسعار الحية شغالة (وقت التداول)
         if: always()
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
         run: |
           t=$((10#$(TZ=Asia/Riyadh date +%H%M))); d=$(TZ=Asia/Riyadh date +%u)
-          inwin=0
-          if { [ "$d" = "7" ] || [ "$d" -le 4 ]; } && [ "$t" -ge 930 ] && [ "$t" -le 1530 ]; then inwin=1; fi
-          if [ "${{ inputs.test_hop }}" = "true" ]; then inwin=1; fi
-          if [ "$inwin" != "1" ]; then echo "خارج وقت التداول — السلسلة تتوقف"; exit 0; fi
-          waiting() {
-            a=$(gh api "repos/$REPO/actions/workflows/prices.yml/runs?status=queued" --jq .total_count)
-            b=$(gh api "repos/$REPO/actions/workflows/prices.yml/runs?status=pending" --jq .total_count)
-            echo $((a + b))
-          }
-          if [ "$(waiting)" != "0" ]; then echo "فيه دورة ثانية بالطابور — هي تكمّل السلسلة"; exit 0; fi
-          sleep 220
-          if [ "$(waiting)" != "0" ]; then echo "فيه دورة ثانية بالطابور — هي تكمّل السلسلة"; exit 0; fi
-          gh workflow run prices.yml --ref main
-          echo "انطلقت الدورة الجاية"
+          if { [ "$d" = "7" ] || [ "$d" -le 4 ]; } && [ "$t" -ge 930 ] && [ "$t" -le 1500 ]; then
+            busy=0
+            for st in in_progress queued pending; do c=$(gh api "repos/$REPO/actions/workflows/live.yml/runs?status=$st" --jq .total_count); busy=$((busy + c)); done
+            if [ "$busy" = "0" ]; then gh workflow run live.yml --ref main && echo "شغّلت حلقة الأسعار الحية"; else echo "الحلقة شغالة"; fi
+          else
+            echo "خارج وقت التداول"
+          fi

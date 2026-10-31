@@ -59,12 +59,41 @@ async function fetchMarket(manual) {
   try {
     const r = await fetch('data/market.json?t=' + Date.now(), { cache: 'no-store' });
     if (!r.ok) throw new Error(r.status);
-    M = await r.json(); lastFetch = Date.now();
+    M = await r.json(); lastFetch = Date.now(); liveAt = null;
     buildMarketTrend();
     if (manual) toast('الأسعار محدّثة');
   } catch {
     if (manual) toast('ما قدرت أجيب الأسعار. تأكد من النت');
   } finally { btn.classList.remove('spinning'); render(); }
+}
+
+/* الأسعار الحية: ملف صغير يتحدث كل دقيقة وقت التداول (فرع live)، نقراه عن طريق GitHub API
+   الحد المجاني ~٦٠ طلب بالساعة، فنقراه كل ٧٠ ثانية، ولو انرفض نرجع لنسخة الموقع (كل ٥ دقائق) */
+const GH_OWNER = location.hostname.endsWith('.github.io') ? location.hostname.split('.')[0] : 'saudalsulaimani-beep';
+const GH_REPO = location.hostname.endsWith('.github.io') ? (location.pathname.split('/')[1] || 'mahfazti') : 'mahfazti';
+const LIVE_URL = `https://api.github.com/repos/${GH_OWNER}/${GH_REPO}/contents/live.json?ref=live`;
+let liveBlockedUntil = 0, liveAt = null;
+async function fetchLive() {
+  if (!M || Date.now() < liveBlockedUntil) return;
+  try {
+    const r = await fetch(LIVE_URL, { headers: { Accept: 'application/vnd.github.raw' }, cache: 'no-cache' });
+    if (r.status === 403 || r.status === 429) { liveBlockedUntil = Date.now() + 15 * 60e3; return; }
+    if (!r.ok) return;
+    const L = await r.json(); if (!L?.q) return;
+    if (liveAt && L.t <= liveAt) return;
+    liveAt = L.t; let maxT = M.marketTime || 0;
+    for (const [code, a] of Object.entries(L.q)) {
+      const q = M.quotes[code]; if (!q) continue;
+      const [p, pc, dh, dl, v, t] = a; if (!t || (q.t && t < q.t)) continue;
+      const day = new Date((t + 3 * 3600) * 1000).toISOString().slice(0, 10);
+      if (Array.isArray(q.c) && q.c.length && code !== 'TASI') {
+        if (q.cl && day > q.cl) { q.c = q.c.concat(+p.toFixed(2)).slice(-250); q.cl = day; } else q.c[q.c.length - 1] = +p.toFixed(2);
+      }
+      Object.assign(q, { p: +p.toFixed(2), pc: pc ?? q.pc, dh: dh ?? q.dh, dl: dl ?? q.dl, v: v ?? q.v, t, stale: false });
+      if (t > maxT) maxT = t;
+    }
+    M.marketTime = maxT; render();
+  } catch { /* نكمل على نسخة الموقع */ }
 }
 
 /* Yahoo ما يعطي تاريخ تاسي، فنرسم اتجاه السوق من متوسط حركة كل الأسهم (وزن متساوي) ونطابقه مع آخر قيمة لتاسي */
@@ -752,7 +781,7 @@ function vSteps() {
       <div class="lbl">${ses.live ? 'جلسة اليوم' : 'خطوات الجلسة الجاية'}</div>
       <h2>${ses.label}</h2>
       <div class="whyline">${actionable ? `عندك ${num(actionable)} ${actionable === 1 ? 'خطوة' : 'خطوات'}. نفّذها بالترتيب.` : 'ما عليك شي. لا خطوة = لا حركة، وهذا قرار بحد ذاته.'}</div>
-      <div class="an-date">الخطة تنحسب من جديد مع كل سعر · آخر سعر ${ago(M?.marketTime)}${NOTES.updated ? ` · تحليل الأخبار ${num(NOTES.updated)}` : ''}${ses.live ? ' · الأسعار تتحدث كل ٥ دقائق' : ''}</div>
+      <div class="an-date">الخطة تنحسب من جديد مع كل سعر · آخر سعر ${ago(M?.marketTime)}${NOTES.updated ? ` · تحليل الأخبار ${num(NOTES.updated)}` : ''}${ses.live ? ' · الأسعار تتحدث كل دقيقة تقريباً' : ''}</div>
     </section>
     ${steps.map(stepCard).join('') || '<div class="calm">✓ كل شي تمام. افتح التطبيق الجلسة الجاية.</div>'}
     <section class="card">
@@ -1240,9 +1269,12 @@ async function boot() {
   syncPlan(); render();
   if (imp) openSheet({ type: 'import', data: imp });
   iosHint();
-  setInterval(() => { if (document.visibilityState === 'visible' && marketOpen()) fetchMarket(false); }, 60000);
+  // وقت التداول: آخر الأسعار كل ~٧٠ ثانية، والبيانات الكاملة كل ٥ دقائق
+  setInterval(() => { if (document.visibilityState === 'visible' && marketOpen()) fetchLive(); }, 70000);
+  setInterval(() => { if (document.visibilityState === 'visible' && marketOpen()) fetchMarket(false).then(fetchLive); }, 300000);
+  if (marketOpen()) fetchLive();
   setInterval(renderStatus, 30000);
-  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && Date.now() - lastFetch > 60000) fetchMarket(false); });
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && Date.now() - lastFetch > 60000) fetchMarket(false).then(() => { if (marketOpen()) fetchLive(); }); });
   if ('serviceWorker' in navigator) {
     // لما ينزل تحديث للتطبيق، يعيد التحميل مرة وحدة عشان تشوف النسخة الجديدة فوراً
     let reloaded = false;

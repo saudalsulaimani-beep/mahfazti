@@ -1,0 +1,42 @@
+name: الأسعار الحية (كل دقيقة)
+
+on:
+  workflow_dispatch:
+    inputs:
+      test_iters:
+        description: "اختبار: عدد دورات قصيرة حتى خارج وقت التداول (0 = تشغيل عادي)"
+        type: string
+        default: "0"
+  schedule:
+    # بدايات احتياطية — البداية الأساسية من تحديث الصباح
+    - cron: "35 6 * * 0-4"
+    - cron: "5,35 7-11 * * 0-4"
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: live
+  cancel-in-progress: false
+
+jobs:
+  live:
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: حلقة الأسعار (كل دقيقة لين نهاية التداول)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TEST_ITERS: ${{ inputs.test_iters || '0' }}
+        run: |
+          t=$((10#$(TZ=Asia/Riyadh date +%H%M))); d=$(TZ=Asia/Riyadh date +%u)
+          if [ "$TEST_ITERS" = "0" ]; then
+            if ! { { [ "$d" = "7" ] || [ "$d" -le 4 ]; } && [ "$t" -ge 930 ] && [ "$t" -le 1525 ]; }; then echo "خارج وقت التداول"; exit 0; fi
+          fi
+          node scripts/live-loop.mjs
