@@ -644,6 +644,7 @@ function plainVerdict(b) {
 }
 function planRole(code) {
   const P = S.plan, h = S.holdings.find((x) => x.code === code); if (!P?.approved) return null;
+  if (h?.spec) return ['warn', 'مضاربة'];
   if (P.basket.includes(code)) return ['gain', h ? 'من سلّتك: نجمع فيه' : 'من سلّتك'];
   if (h?.keep) return ['warn', 'تركته برا الخطة'];
   if (h) return ['loss', 'بنبيعه'];
@@ -760,19 +761,21 @@ function vToday() {
     <section class="s-head"><h2>${act.length ? 'وش تسوي اليوم؟' : 'اليوم ما عليك شي ✓'}</h2>
       <div class="s-sub">${ses.live ? 'جلسة اليوم' : 'الجلسة الجاية'}: ${ses.label}${act.length ? ` · ${num(act.length)} ${act.length === 1 ? 'خطوة' : 'خطوات'} بالترتيب` : ''}</div></section>
     ${steps.length ? steps.map(simpleStep).join('') : '<div class="s-calm"><div class="s-big">☕</div><b>ارتاح</b><div>ما فيه شي تسويه. وإذا صار شي بقول لك الساعة ١٠ الصبح.</div></div>'}
+    ${specCard(c)}
     <div class="s-next">📅 ${mo?.picks?.length && !mo.picks.every((x) => x.done) ? `شراء ${ses.monthName}: ${mo.picks.map((x) => esc(Q(x.code)?.n || x.code)).join(' و')}` : `الشراء الجاي: أول جلسة في ${nextM}`}<br>🔔 تنبيه كل يوم تداول الساعة ١٠ الصبح<br>🔄 الأسعار تتحدث كل دقيقة وقت السوق</div>
     ${foot()}`;
 }
 function vMoney() {
   const c = calc(), P = S.plan;
   if (!S.holdings.length && !S.cash) return vaultCard();
-  const role = (h) => !P.approved ? null : P.basket.includes(h.code) ? ['gain', 'نجمع فيه'] : h.keep ? ['warn', 'تركته'] : ['loss', 'بنبيعه'];
+  const role = (h) => !P.approved ? null : h.spec ? ['warn', 'مضاربة'] : P.basket.includes(h.code) ? ['gain', 'نجمع فيه'] : h.keep ? ['warn', 'تركته'] : ['loss', 'بنبيعه'];
   const live = session().live; const scr = P.approved ? coreScreen() : [];
   return `${moneyCard(c, 'فلوسك كلها')}
     <div class="s-cards">
       <div class="s-card s-cash"><div><b>💵 كاش جاهز</b><div class="s-sub">فلوس في حسابك ما استخدمناها للحين</div></div><div class="s-amt">${fmt(S.cash, 0)}</div></div>
       ${c.H.sort((a, b) => b.value - a.value).map((h) => { const r = role(h); const E = P.exits?.[h.code];
-        const plan = !P.approved ? '' : P.basket.includes(h.code) ? 'ما نبيعه عشان نزل. نجمع فيه كل شهر على المدى الطويل.'
+        const tr = h.spec ? (P.spec?.trades || []).find((x) => x.code === h.code && x.status === 'open') : null;
+        const plan = !P.approved ? '' : tr ? `مضاربة: الهدف ${num(fmt(tr.target))} · نبيع لو نزل تحت ${num(fmt(tr.stop))}.` : P.basket.includes(h.code) ? 'ما نبيعه عشان نزل. نجمع فيه كل شهر على المدى الطويل.'
           : h.keep ? 'تركته برا الخطة، فما بطلب منك تبيعه.' : E ? `نبيعه بهدوء: معروض بـ ${num(fmt(E.sellAt))}، ونطلع فوراً لو نزل تحت ${num(fmt(E.floor))}.` : h.stop != null ? `حد الأمان: لو نزل تحت ${num(fmt(h.stop))} نبيعه.` : '';
         return `<button class="s-card s-hold" data-act="shold" data-code="${h.code}">
         <div class="s-hold-top"><b>${esc(nameOf(h))}</b>${r ? `<span class="vchip ${r[0]}">${r[1]}</span>` : ''}</div>
@@ -825,6 +828,7 @@ function vHelp() {
     ['ما قدرت أنفّذ الخطوة اليوم؟', 'عادي. اضغط «ما قدرت اليوم» وترجع لك الجلسة الجاية بسعر جديد.'],
     ['ما ودي أبيع سهم معيّن؟', 'تحت خطوة البيع فيه «ما أبي أبيعه». تضغطه وأطلّعه من الخطة.'],
     ['متى يجيني التنبيه؟', 'كل يوم تداول (الأحد إلى الخميس) الساعة ١٠ الصبح.'],
+    ['كيف تشتغل المضاربة؟', 'مبلغ منفصل (١٠٪ من فلوسك). نشتري سهم اتجاهه العام صاعد لما ينزل شوي، ونحط هدف ربح وحد أمان. أقصى خسارة بالصفقة حوالي ١.٥٪ من محفظتك، وصفقتين بالكثير، ولو خسر المبلغ ٢٥٪ نوقف. في الاختبار، أغلب الصفقات خسرت شوي، وقليل منها ربح زين.'],
   ];
   const words = [
     ['سهم', 'جزء صغير من شركة. لما تشتري سهم، تصير شريك صغير فيها.'],
@@ -920,7 +924,7 @@ function syncPlan() {
     const c = calc();
     const elapsed = Math.max(0, monthsBetween(P.approved.slice(0, 7), ses.key));
     const left = Math.max(1, P.months - elapsed);
-    const deploy = Math.max(0, S.cash - P.buffer * c.total);
+    const deploy = Math.max(0, S.cash - P.buffer * c.total - specReserve());
     const amount = deploy / left;
     const held = (code) => c.H.find((h) => h.code === code)?.value || 0;
     const order = [...P.basket].sort((a, b) => held(a) - held(b));
@@ -929,7 +933,7 @@ function syncPlan() {
     changed = true;
   }
   for (const h of S.holdings) {
-    if (P.basket.includes(h.code) || h.keep) { if (P.exits[h.code]) { delete P.exits[h.code]; changed = true; } continue; }
+    if (P.basket.includes(h.code) || h.keep || h.spec) { if (P.exits[h.code]) { delete P.exits[h.code]; changed = true; } continue; }
     if (!P.exits[h.code]) {
       const q = Q(h.code), L = levels(q); if (!q || !L) continue;
       P.exits[h.code] = { start: ses.date, sellAt: rnd(Math.max(q.p * 1.03, Math.min(L.m20, q.p * 1.08)), true), floor: rnd(L.l20 * 0.97) };
@@ -938,6 +942,59 @@ function syncPlan() {
   }
   Object.keys(P.exits).forEach((code) => { if (!S.holdings.find((h) => h.code === code)) { delete P.exits[code]; changed = true; } });
   if (changed) save();
+}
+
+/* ═════════ المضاربة (مبلغ منفصل بقواعد صارمة) ═════════
+   الدخول: سهم رابح، اتجاهه العام صاعد (فوق متوسط ١٠٠ يوم)، ورجع قرب أدنى سعر بآخر ٢٠ جلسة
+   الوقف ٣٪ تحت أدنى ٢٠ جلسة · الهدف ضعف المخاطرة · أقصى خسارة بالصفقة ١.٥٪ من المحفظة
+   صفقتين بالكثير · لو خسر مبلغ المضاربة ٢٥٪ نوقف الدخول · ٤٠ جلسة بدون نتيجة = خروج */
+function specOn() { return !!(S.plan?.approved && S.plan.spec?.on); }
+function specState(c) {
+  const sp = S.plan.spec || { budget: 0, trades: [] }, T = sp.trades || [];
+  const realized = T.filter((t) => t.status === 'closed').reduce((a, t) => a + (t.pnl || 0), 0);
+  const open = T.filter((t) => t.status === 'open');
+  const openCost = open.reduce((a, t) => a + t.qty * t.entry * (1 + FEE), 0);
+  const openVal = open.reduce((a, t) => a + t.qty * (Q(t.code)?.p ?? t.entry), 0);
+  const cash = sp.budget + realized - openCost, value = cash + openVal;
+  const closed = T.filter((t) => t.status === 'closed');
+  return { realized, open, cash, value, pnl: value - sp.budget, halted: sp.budget > 0 && value <= sp.budget * 0.75, closed, wins: closed.filter((t) => t.pnl > 0).length };
+}
+function specReserve() { return S.plan?.spec ? Math.max(0, specState(calc()).cash) : 0; }
+function specCandidates(c) {
+  if (!specOn()) return [];
+  const st = specState(c); if (st.halted || st.open.length >= 2) return [];
+  const alloc = Math.min(st.cash, S.plan.spec.budget / 2); if (alloc < 80) return [];
+  const riskCap = 0.015 * c.total, out = [];
+  for (const t of TICK) {
+    const code = t.code;
+    if (S.plan.basket.includes(code) || S.holdings.some((h) => h.code === code)) continue;
+    const q = Q(code), f = FUND.f?.[code]; if (!q?.c || q.c.length < 120 || !q.p) continue;
+    if (NOTES.notes?.[code]?.fund === 'سلبي' || !(f?.pe > 0)) continue;
+    const p = q.p, m100 = sma(q.c, 100), l20 = Math.min(...q.c.slice(-20));
+    if (!(p > m100 && p <= l20 * 1.01)) continue;
+    const entry = rnd(p), stop = rnd(Math.min(l20, p) * 0.97), R = entry - stop; if (R <= 0) continue;
+    const target = rnd(entry + 2 * R, true);
+    const qty = Math.min(Math.floor(riskCap / R), Math.floor(alloc / (entry * (1 + FEE)))); if (qty < 1) continue;
+    out.push({ code, entry, stop, target, qty, score: analyze(code)?.score ?? 0 });
+  }
+  return out.sort((x, y) => y.score - x.score).slice(0, 1);
+}
+function specCard(c) {
+  const P = S.plan; if (!P?.approved) return '';
+  if (!P.spec) return `<section class="s-card s-spec"><b>🎲 المضاربة</b>
+    <div class="s-sub">اخترت تضارب بـ ١٠٪ من فلوسك (حوالي ${num(fmt(c.total * 0.1, 0))} ريال)، والباقي يكمل على خطة السلة.</div>
+    <ul class="s-rules"><li>نشتري سهم اتجاهه العام صاعد، لما ينزل شوي.</li><li>أقصى خسارة في الصفقة حوالي ${num(fmt(c.total * 0.015, 0))} ريال، والهدف ضعفها.</li><li>صفقتين مفتوحة بالكثير.</li><li>لو خسر مبلغ المضاربة ٢٥٪، نوقف.</li></ul>
+    <div class="s-warn">في اختبار سنة كاملة، ٣٠٪ بس من الصفقات ربحت، والنتيجة قريبة من التعادل. يعني بتشوف خسائر صغيرة كثير.</div>
+    <button class="btn pri block" data-act="spec-on" data-pct="0.1">فعّل المضاربة بـ ١٠٪</button></section>`;
+  const st = specState(c), sp = P.spec;
+  const status = st.halted ? '<div class="s-warn">خسر مبلغ المضاربة ٢٥٪، فوقفنا الدخول في صفقات جديدة. القاعدة هذي تحميك.</div>'
+    : !sp.on ? '<div class="s-sub">المضاربة موقفة. الصفقات المفتوحة بتكمل لين تقفل.</div>'
+    : st.open.length >= 2 ? '<div class="s-sub">عندك صفقتين مفتوحة، فما ندخل جديد لين تقفل وحدة.</div>'
+    : specCandidates(c).length ? '<div class="s-sub">فيه فرصة اليوم، تلقاها في الخطوات فوق.</div>'
+    : '<div class="s-sub">ما فيه فرصة مضاربة اليوم حسب القواعد. القاعدة ما تشتري إلا سهم اتجاهه العام صاعد، والسوق حالياً نازل. أول ما تطلع فرصة بتلقاها هنا.</div>';
+  return `<section class="s-card s-spec"><div class="s-mkt-top"><b>🎲 مبلغ المضاربة</b><span class="vchip ${st.pnl >= 0 ? 'gain' : 'loss'}">${st.pnl >= 0 ? 'ربح' : 'خسارة'} ${num(fmt(Math.abs(st.pnl), 0))} ريال</span></div>
+    <div>قيمته الحين ${num(fmt(st.value, 0))} ريال من ${num(fmt(sp.budget, 0))} · مفتوحة: ${num(st.open.length)} · مقفلة: ${num(st.closed.length)}${st.closed.length ? ` (ربحت ${num(st.wins)})` : ''}</div>
+    ${status}</section>`;
 }
 
 function planSteps(c) {
@@ -992,7 +1049,44 @@ function planSteps(c) {
         plain: { title: `اعرض أسهمك في ${esc(nm(h.code))} للبيع`, why: `أرقام هالشركة ضعيفة، فبنطلع منها بهدوء. نعرضها بسعر أعلى شوي من سعرها اليوم (${num(fmt(h.p))}) وننتظر أسبوعين. لو نزلت كثير بقول لك تبيع على طول.` } });
     }
   }
-  // ٣. شراء الشهر
+  // ٣. المضاربة: إدارة المفتوح أول، بعدين الجديد
+  if (P.spec) {
+    const SS = specState(c);
+    for (const t of SS.open) {
+      const q = Q(t.code); if (!q) continue; const p = q.p, nmx = esc(nm(t.code)), days = sessionsBetween(t.opened, ses.date);
+      if (p <= t.stop || days >= 40) {
+        const id = `spec-out-${t.id}`; if (hidden(id)) continue;
+        const price = px(id, rnd(p * 0.99));
+        out.push({ id, kind: 'order', side: 'sell', code: t.code, qty: t.qty, price, tone: 'loss', spec: t.id,
+          title: `مضاربة: بيع ${num(t.qty)} سهم من ${nmx}`,
+          why: p <= t.stop ? `السعر ${num(fmt(p))} نزل تحت حد الأمان ${num(fmt(t.stop))}. نطلع بخسارة صغيرة بدل ما تكبر.` : 'مرت ٤٠ جلسة بدون ما يوصل الهدف، فنطلع ونفرّغ المبلغ لفرصة ثانية.',
+          plain: { title: `مضاربة: بيع أسهمك في ${nmx}`, why: (p <= t.stop ? `نزل تحت حد الأمان (${num(fmt(t.stop))}). نطلع الحين بخسارة صغيرة بدل ما تكبر.` : 'مرّ وقت طويل وما وصل الهدف، فنطلع ونخلي المبلغ لفرصة ثانية.') + (t.tgtPlaced ? ' وقبلها ألغِ طلب البيع عند الهدف من «الأوامر».' : '') } });
+      } else if (t.tgtPlaced && p >= t.target) {
+        const id = `spec-hit-${t.id}`; if (hidden(id)) continue;
+        out.push({ id, kind: 'confirm', side: 'sell', code: t.code, qty: t.qty, price: t.target, tone: 'gain', spec: t.id,
+          title: `مضاربة: غالباً انباع ${nmx} عند الهدف ${num(fmt(t.target))}`, why: 'السعر وصل الهدف. تأكد في الأهلي تداول.',
+          plain: { title: `مضاربة: غالباً انباعت ${nmx} عند الهدف 🎯`, why: `السعر وصل ${num(fmt(t.target))}. افتح «موجودات المحفظة» في الأهلي تداول وتأكد.` } });
+      } else if (!t.tgtPlaced) {
+        const id = `spec-tgt-${t.id}`; if (hidden(id)) continue;
+        out.push({ id, kind: 'order', resting: true, side: 'sell', code: t.code, qty: t.qty, price: t.target, tone: 'gain', spec: t.id,
+          title: `مضاربة: حط أمر بيع ${num(t.qty)} سهم من ${nmx} عند الهدف ${num(fmt(t.target))}`, why: `الهدف ضعف المخاطرة. ولو نزل تحت ${num(fmt(t.stop))} بقول لك تطلع.`,
+          plain: { title: `مضاربة: اعرض ${nmx} للبيع عند الهدف`, why: `نحط طلب بيع عند ${num(fmt(t.target))}، يعني ربح حوالي ${num(fmt((t.target - t.entry) * t.qty, 0))} ريال لو وصله. ولو نزل تحت ${num(fmt(t.stop))} بقول لك تبيع.` } });
+      } else {
+        out.push({ id: `spec-wait-${t.id}`, kind: 'wait', tone: 'info', title: `مضاربة ${nmx} مفتوحة`, why: `الهدف ${num(fmt(t.target))} · حد الأمان ${num(fmt(t.stop))}`,
+          plain: { title: `مضاربة ${nmx} مفتوحة`, why: `ننتظر يوصل الهدف ${num(fmt(t.target))}، ولو نزل تحت ${num(fmt(t.stop))} بقول لك تبيع. الحين: ${(p - t.entry) * t.qty >= 0 ? 'ربح' : 'خسارة'} ${num(fmt(Math.abs((p - t.entry) * t.qty), 0))} ريال.` } });
+      }
+    }
+    for (const cnd of specCandidates(c)) {
+      const id = `spec-in-${ses.date}-${cnd.code}`; if (hidden(id)) continue;
+      const price = px(id, cnd.entry), nmx = esc(nm(cnd.code));
+      out.push({ id, kind: 'order', side: 'buy', code: cnd.code, qty: cnd.qty, price, tone: 'warn', specNew: { stop: cnd.stop, target: cnd.target },
+        title: `مضاربة: اشتر ${num(cnd.qty)} سهم من ${nmx}`,
+        why: `اتجاهه العام صاعد ورجع قرب أدنى سعر له بآخر ٢٠ يوم. حد الأمان ${num(fmt(cnd.stop))}، والهدف ${num(fmt(cnd.target))}.`,
+        result: `أقصى خسارة لو ضرب حد الأمان: حوالي ${num(fmt(cnd.qty * (price - cnd.stop), 0))} ريال. والربح لو وصل الهدف: حوالي ${num(fmt(cnd.qty * (cnd.target - price), 0))} ريال.`,
+        plain: { title: `مضاربة: اشتر ${num(cnd.qty)} سهم من ${nmx}`, why: `سهم صاعد على المدى الطويل ونزل شوي هالأيام. لو وصل الهدف ${num(fmt(cnd.target))} تربح حوالي ${num(fmt(cnd.qty * (cnd.target - price), 0))} ريال، ولو نزل تحت ${num(fmt(cnd.stop))} نبيع وتخسر حوالي ${num(fmt(cnd.qty * (price - cnd.stop), 0))} ريال.` } });
+    }
+  }
+  // ٤. شراء الشهر
   const mo = P.month;
   if (mo && mo.key === ses.key) {
     mo.picks.forEach((pk, i) => {
@@ -1106,10 +1200,15 @@ function applyFill(stp, qty, price) {
     if (h) { h.cost = +((h.qty * h.cost + gross + fee) / (h.qty + qty)).toFixed(4); h.qty += qty; }
     else S.holdings.push({ id: uid(), code: stp.code, qty, cost: +((gross + fee) / qty).toFixed(4) });
     if (stp.pick != null && P.month?.picks?.[stp.pick]) P.month.picks[stp.pick].done = true;
+    if (stp.specNew && P.spec) {
+      P.spec.trades = (P.spec.trades || []).concat({ id: uid(), code: stp.code, qty, entry: price, stop: stp.specNew.stop, target: stp.specNew.target, opened: ses.date, status: 'open' });
+      const hh = S.holdings.find((x) => x.code === stp.code); if (hh) hh.spec = true;
+    }
   } else if (h) {
     const q = Math.min(qty, h.qty);
     S.cash = +(S.cash + q * price - q * price * FEE).toFixed(2);
     rec.pnl = +((price - h.cost) * q - q * price * FEE).toFixed(2);
+    if (stp.spec && P.spec) { const tr = P.spec.trades.find((x) => x.id === stp.spec); if (tr) Object.assign(tr, { status: 'closed', exit: price, closed: ses.date, pnl: +((price - tr.entry) * q - q * price * FEE - q * tr.entry * FEE).toFixed(2) }); }
     h.qty -= q; if (h.qty <= 0) S.holdings = S.holdings.filter((x) => x !== h);
     delete P.exits[stp.code];
   }
@@ -1400,6 +1499,8 @@ function shSettings(st) {
     <button class="btn block" data-act="${simple ? 'mode-adv' : 'mode-simple'}">${simple ? 'افتح الوضع المتقدم' : 'ارجع للوضع البسيط'}</button></div>
   <form class="form" id="cashForm"><label class="field">السيولة النقدية (ريال)<input id="f-cash" class="n" inputmode="decimal" value="${S.cash ?? ''}"></label>
     <button class="btn pri block" type="submit">حفظ السيولة</button></form>
+  ${S.plan?.approved ? `<div class="s-card"><b>🎲 المضاربة: ${S.plan.spec?.on ? `مفعّلة (${num(fmt(S.plan.spec.budget, 0))} ريال)` : 'موقفة'}</b>
+    ${S.plan.spec?.on ? '<button class="btn block" data-act="spec-off">أوقف المضاربة (الصفقات المفتوحة تكمل)</button>' : '<button class="btn block" data-act="spec-on" data-pct="0.1">فعّل المضاربة بـ ١٠٪</button>'}</div>` : ''}
   ${S.plan?.approved ? `<form class="form" id="planForm"><b>إعدادات الخطة</b>
     <div class="two"><label class="field">تقسيم السيولة على كم شهر<input id="pl-months" class="n" inputmode="numeric" value="${S.plan.months}"></label>
     <label class="field">الاحتياط الكاش (%)<input id="pl-buffer" class="n" inputmode="decimal" value="${Math.round(S.plan.buffer * 100)}"></label></div>
@@ -1463,7 +1564,18 @@ document.addEventListener('click', async (e) => {
     case 'copy-val': { const val = t.dataset.val; try { await navigator.clipboard.writeText(val); toast('انسخ: ' + val); } catch { toast(val); } break; }
     case 'step-ok': S.plan.steps[t.dataset.id] = { s: 'done', d: session().date }; save(); render(); break;
     case 'step-skip': S.plan.steps[t.dataset.id + '#skip'] = { s: 'skip', d: session().date }; save(); render(); toast('تمام، بنرجع لها الجلسة الجاية'); break;
-    case 'step-placed': S.plan.steps[t.dataset.id] = { s: 'placed', d: session().date }; save(); render(); toast('ممتاز. بتابعه لك كل يوم'); break;
+    case 'step-placed': {
+      const id = t.dataset.id;
+      if (id.startsWith('spec-tgt-')) { const tr = S.plan.spec?.trades?.find((x) => x.id === id.slice(9)); if (tr) tr.tgtPlaced = true; }
+      S.plan.steps[id] = { s: 'placed', d: session().date }; save(); render(); toast('ممتاز. بتابعه لك كل يوم'); break;
+    }
+    case 'spec-on': {
+      const c = calc(), pc = +t.dataset.pct || 0.1;
+      S.plan.spec = Object.assign({ trades: [] }, S.plan.spec || {}, { on: true, pct: pc, budget: S.plan.spec?.budget || Math.round(c.total * pc), started: S.plan.spec?.started || session().date });
+      if (S.plan.month && !S.plan.month.picks.some((x) => x.done)) S.plan.month = null;
+      save(); syncPlan(); render(); toast('فعّلت المضاربة'); break;
+    }
+    case 'spec-off': if (S.plan.spec) { S.plan.spec.on = false; save(); closeSheet(); render(); toast('وقفت المضاربة'); } break;
     case 'step-fill': { const stp = planSteps(calc()).find((x) => x.id === t.dataset.id); if (stp) openSheet({ type: 'fill', step: stp }); break; }
     case 'keep-holding': { const h = S.holdings.find((x) => x.code === t.dataset.code); if (h) { h.keep = true; delete S.plan.exits[h.code]; save(); render(); toast('طلّعته من الخطة، ما راح أطلب منك تبيعه'); } break; }
     case 'stop-plan': if (!st.confirmStop) { st.confirmStop = true; renderSheet(); break; } S.plan = planDefaults(); save(); closeSheet(); render(); toast('وقفت الخطة'); break;

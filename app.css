@@ -405,3 +405,6 @@ body.simple{font-size:16px}
 .s-tapmore{font-size:.75rem;color:var(--pine);font-weight:700}
 body.simple .cell .v{font-family:var(--f-body);font-weight:700;font-variant-numeric:tabular-nums}
 body.simple .sh-h .code{font-family:var(--f-body)}
+
+.s-spec{border:1.5px dashed var(--warn)}
+.s-rules{margin:4px 0;padding-inline-start:20px;font-size:.92rem;line-height:1.8}
