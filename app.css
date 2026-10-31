@@ -377,3 +377,31 @@ body.simple{font-size:16px}
 .s-ol{margin:8px 0;padding-inline-start:22px;line-height:1.9}
 .s-dict dt{font-weight:700;margin-top:10px}
 .s-dict dd{margin:2px 0 0;color:var(--muted);line-height:1.7}
+
+/* الوضع البسيط: المعلومات المرجّعة */
+.tabbar.simple button{max-width:130px}
+.s-mkt{gap:6px;font-size:.95rem}
+.s-mkt-top{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.s-news{background:var(--surface-2);border-radius:12px;padding:8px 12px;font-size:.88rem;line-height:1.7}
+.s-more{background:var(--surface-2);border-radius:14px;padding:10px 12px;box-shadow:none;display:block}
+.s-more summary{font-family:var(--f-body);font-weight:700;color:var(--pine);font-size:.95rem}
+.s-more summary::after{content:"+"}
+.s-more[open] summary::after{content:"−"}
+.s-more>*+*{margin-top:10px}
+.s-more .cell,.s-more .bb-col{background:var(--surface)}
+.pa{display:flex;flex-direction:column;gap:10px;margin-top:6px}
+.pa-v{display:flex;flex-direction:column;gap:4px}
+.pa-v .vchip{align-self:flex-start;font-size:.85rem}
+.pa-cl{background:var(--surface-2);border-radius:12px;padding:10px 12px;font-size:.88rem}
+.pa-row{display:flex;gap:8px;align-items:baseline;padding:6px 0;border-top:1px solid var(--line)}
+.pa-row:first-of-type{margin-top:6px}
+.pa-row span:nth-child(2){flex:1}
+.pa-row small{color:var(--muted);font-size:.75rem;white-space:nowrap}
+.s-hold-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+.s-hold-grid div{background:var(--surface-2);border-radius:10px;padding:6px 10px;display:flex;flex-direction:column}
+.s-hold-grid span{font-size:.72rem;color:var(--muted)}
+.s-hold-grid b{font-size:.98rem}
+.s-plan{font-size:.88rem;line-height:1.7;background:var(--surface-2);border-radius:10px;padding:8px 10px}
+.s-tapmore{font-size:.75rem;color:var(--pine);font-weight:700}
+body.simple .cell .v{font-family:var(--f-body);font-weight:700;font-variant-numeric:tabular-nums}
+body.simple .sh-h .code{font-family:var(--f-body)}

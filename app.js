@@ -467,7 +467,7 @@ function render() {
   if (simple && !SIMPLE_VIEWS.includes(view)) view = 'today';
   if (!simple && SIMPLE_VIEWS.includes(view)) view = 'steps';
   document.body.classList.toggle('simple', simple);
-  v.innerHTML = ({ today: vToday, money: vMoney, help: vHelp, steps: vSteps, home: vHome, holdings: vHoldings, market: vMarket, watch: vWatch, learn: vLearn }[view] || vToday)();
+  v.innerHTML = ({ today: vToday, money: vMoney, smarket: vSMarket, help: vHelp, steps: vSteps, home: vHome, holdings: vHoldings, market: vMarket, watch: vWatch, learn: vLearn }[view] || vToday)();
   document.querySelectorAll('#tabbar button').forEach((b) => { if (b.dataset.v === view) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current'); });
   if (sheetState) renderSheet();
 }
@@ -571,7 +571,8 @@ function dailyPlan(c) {
 /* ═════════ الوضع البسيط (الأساسي) ═════════
    ٣ تبويبات: اليوم، فلوسي، مساعدة — بدون مصطلحات. التفاصيل كلها في «الوضع المتقدم». */
 let simple = (() => { try { return localStorage.getItem('mahfazti.mode') !== 'advanced'; } catch { return true; } })();
-const SIMPLE_VIEWS = ['today', 'money', 'help'];
+const SIMPLE_VIEWS = ['today', 'money', 'smarket', 'help'];
+let smSort = 'best';
 const ICONS = {
   today: '<circle cx="12" cy="12" r="9"/><path d="M8 12.5l2.5 2.5L16 9.5"/>',
   money: '<path d="M3 7a2 2 0 0 1 2-2h13v2"/><rect x="3" y="7" width="18" height="13" rx="2"/><path d="M16 13.5h2"/>',
@@ -580,11 +581,12 @@ const ICONS = {
   home: '<path d="M3 11l9-7 9 7v9a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1z"/>',
   holdings: '<rect x="3" y="7" width="18" height="13" rx="2"/><path d="M8 7V5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M3 13h18"/>',
   market: '<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>',
+  smarket: '<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>',
   watch: '<path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>',
   learn: '<path d="M4 5a2 2 0 0 1 2-2h13v16H6a2 2 0 0 0-2 2z"/><path d="M4 19V5M8 7h7"/>',
 };
 function renderTabs() {
-  const T = simple ? [['today', 'اليوم'], ['money', 'فلوسي'], ['help', 'مساعدة']]
+  const T = simple ? [['today', 'اليوم'], ['money', 'فلوسي'], ['smarket', 'السوق'], ['help', 'مساعدة']]
     : [['steps', 'خطواتي'], ['home', 'الرئيسية'], ['holdings', 'أسهمي'], ['market', 'السوق'], ['watch', 'المراقبة'], ['learn', 'تعلّم']];
   $('#tabbar').className = 'tabbar' + (simple ? ' simple' : '');
   $('#tabbar').innerHTML = T.map(([v, l]) => `<button data-v="${v}"${v === view ? ' aria-current="page"' : ''}><svg viewBox="0 0 24 24">${ICONS[v]}</svg><span>${l}</span></button>`).join('');
@@ -603,7 +605,7 @@ function moneyCard(c, label) {
   return `<section class="s-money"><div class="s-lbl">${label}</div>
     <div class="s-total">${fmt(c.total, 0)} <span class="cur">ريال</span></div>
     <div class="s-line">${Math.abs(d) < 0.5 ? `${when}: ما تغيّرت تقريباً` : d > 0 ? `<span class="up-t">${when}: زادت ${num(fmt(d, 0))} ريال ▲</span>` : `<span class="down-t">${when}: نقصت ${num(fmt(-d, 0))} ريال ▼</span>`}</div>
-    <div class="s-line s-muted">منها ${num(fmt(S.cash, 0))} ريال كاش جاهز</div></section>`;
+    <div class="s-line s-muted">منها ${num(fmt(S.cash, 0))} ريال كاش جاهز${c.income ? ` · توزيعات متوقعة ~${num(fmt(c.income, 0))} ريال بالسنة` : ''}</div></section>`;
 }
 function orderForm(s) {
   return `<div class="oform">
@@ -627,9 +629,104 @@ function simpleStep(s, i) {
     <div class="s-step-top"><span class="s-step-n">${s.kind === 'wait' ? '⏳' : num(i + 1)}</span><h3>${P.title}</h3></div>
     <div class="s-why">${P.why}</div>
     ${s.kind === 'order' ? orderForm(s) + `<div class="s-tip">💡 ${s.side === 'buy' ? 'هذا أغلى سعر نقبله، وغالباً بتشتري بأرخص منه.' : 'هذا أرخص سعر نقبله، وغالباً بتبيع بأغلى منه.'} حط الطلب بعد الساعة ١٠:١٥ الصبح.</div>` : ''}
+    ${stepDetails(s)}
     ${btns ? `<div class="s-btns">${btns}</div>` : ''}
     ${s.exit ? `<button class="linkbtn" data-act="keep-holding" data-code="${s.code}">ما أبي أبيعه</button>` : ''}
   </article>`;
+}
+const PLAIN_CL = ['سعرها معقول مقارنة بشبيهاتها', 'تربح كويس من فلوس مساهمينها', 'أرباحها تزيد', 'ديونها قليلة', 'توزع أرباح وتقدر تستمر فيها', 'سعرها صاعد على المدى الطويل', 'المحللين يتوقعون لها صعود'];
+function plainVerdict(b) {
+  if (!b || b.own) return null; const l = b.label || '';
+  if (l.startsWith('كويس للشراء الحين')) return ['gain', 'كويس'];
+  if (l.startsWith('كويس للشراء عند')) return ['gain', 'كويس لو نزل لـ ' + fmt(b.L.entry)];
+  if (l === 'مو كويس حالياً') return ['loss', 'ابتعد حالياً'];
+  return ['warn', 'راقب'];
+}
+function planRole(code) {
+  const P = S.plan, h = S.holdings.find((x) => x.code === code); if (!P?.approved) return null;
+  if (P.basket.includes(code)) return ['gain', h ? 'من سلّتك: نجمع فيه' : 'من سلّتك'];
+  if (h?.keep) return ['warn', 'تركته برا الخطة'];
+  if (h) return ['loss', 'بنبيعه'];
+  return null;
+}
+function breadth() {
+  const all = TICK.map((t) => Q(t.code)).filter(Boolean);
+  return { ups: all.filter((q) => (dayChg(q)?.pct ?? 0) > 0).length, downs: all.filter((q) => (dayChg(q)?.pct ?? 0) < 0).length };
+}
+function marketCard(full) {
+  const { ups, downs } = breadth(); const t = Q('TASI'), td = dayChg(t), ses = session();
+  const weak = downs > ups * 1.5, strong = ups > downs * 1.5;
+  const mood = weak ? 'أغلب الأسهم نازلة. عادي، خطتك ما تتأثر: نشتري شوي كل شهر، وما نبيع شركات السلة عشان نزلت.' : strong ? 'أغلب الأسهم طالعة. لا تتحمس وتشتري برا الخطة.' : 'السوق هادي، لا طلوع قوي ولا نزول قوي.';
+  return `<section class="s-card s-mkt"><div class="s-mkt-top"><b>📊 السوق ${ses.live ? 'اليوم' : 'آخر جلسة'}</b>${t ? `<span class="chg ${dir(td?.pct)}">${pct(td?.pct, 2)}</span>` : ''}</div>
+    <div>المؤشر العام (تاسي): <b>${num(fmt(t?.p, 0))}</b> · ${num(ups)} سهم طلع و${num(downs)} نزل</div>
+    <div class="s-sub">${mood}</div>
+    ${NOTES.market ? `<div class="s-news">📰 ${esc(NOTES.market)}<div class="an-date">أخبار ${num(NOTES.updated || '')}</div></div>` : ''}
+    ${full ? '' : '<button class="linkbtn" data-v="smarket">شوف السوق كامل ←</button>'}
+  </section>`;
+}
+function plainAnalysis(code, compact) {
+  const a = analyze(code); if (!a) return '';
+  const b = buyView(code), pv = plainVerdict(b), CL = a.CL;
+  const li = (L) => L.map((x) => `<li>${esc(x)}</li>`).join('') || '<li>ما فيه سبب واضح حالياً</li>';
+  return `<div class="pa">
+    ${!compact && pv ? `<div class="pa-v"><span class="vchip ${pv[0]}">${pv[1]}</span><div class="s-sub">${b.why}</div></div>` : ''}
+    <div class="bb"><div class="bb-col up"><b>↑ ليش ممكن يطلع</b><ul>${li(a.bull.slice(0, compact ? 2 : 4))}</ul></div>
+      <div class="bb-col down"><b>↓ ليش ممكن ينزل</b><ul>${li(a.bear.slice(0, compact ? 2 : 4))}</ul></div></div>
+    ${CL ? (compact ? `<div class="s-sub">فحص الشركة: نجحت في ${num(CL.pass)} من ${num(CL.known)} فحوصات</div>`
+      : `<div class="pa-cl"><b>فحص الشركة: نجحت في ${num(CL.pass)} من ${num(CL.known)}</b>${CL.C.map((c, i) => `<div class="pa-row"><span class="ck ${c.ok === 1 ? 'up' : c.ok === -1 ? 'down' : 'flat'}">${c.ok === 1 ? '✓' : c.ok === -1 ? '✗' : '–'}</span><span>${PLAIN_CL[i]}</span><small>${esc(c.val)}</small></div>`).join('')}</div>`) : ''}
+    ${a.note?.watch ? `<div class="watchbox"><b>وش يحسم:</b> ${esc(a.note.watch)}</div>` : ''}
+    ${a.note && !compact ? `<div class="an-note">📰 ${esc(a.note.text)}<div class="an-date">${num(NOTES.updated || '')}</div></div>` : ''}
+  </div>`;
+}
+function chartLines(code) {
+  const h = S.holdings.find((x) => x.code === code), E = S.plan?.exits?.[code], L = [];
+  if (h) L.push({ v: h.cost, col: 'var(--faint)' });
+  if (E) { L.push({ v: E.sellAt, col: 'var(--gain)' }); L.push({ v: E.floor, col: 'var(--loss)' }); }
+  if (h?.stop) L.push({ v: h.stop, col: 'var(--loss)' });
+  return L;
+}
+function stepDetails(s) {
+  if (!['order', 'confirm'].includes(s.kind)) return '';
+  const q = Q(s.code), h = calc().H.find((x) => x.code === s.code), E = S.plan.exits?.[s.code];
+  const rows = [];
+  if (q) rows.push(['سعرها آخر شي', fmt(q.p)]);
+  if (h) { rows.push(['متوسط شرايك', fmt(h.cost)]); rows.push([h.pnl >= 0 ? 'ربحك الحين' : 'خسارتك الحين', fmt(Math.abs(h.pnl), 0) + ' ريال']); }
+  if (E && s.exit) { rows.push(['سعر البيع اللي نبيه', fmt(E.sellAt)]); rows.push(['نطلع فوراً لو نزل تحت', fmt(E.floor)]); }
+  if (s.side === 'buy' && q?.div) rows.push(['توزيعاتها لك بالسنة', '~' + fmt(s.qty * q.div, 0) + ' ريال']);
+  return `<details class="s-more"><summary>ليش؟ التفاصيل</summary>
+    <div class="kv">${rows.map(([k, v]) => `<div class="cell"><div class="k">${k}</div><div class="v">${v}</div></div>`).join('')}</div>
+    ${plainAnalysis(s.code, true)}
+    ${q?.c ? `<div class="chart">${bigChart(q, 130, chartLines(s.code))}</div>` : ''}
+    <button class="linkbtn" data-act="shold" data-code="${s.code}">كل التحليل ←</button>
+  </details>`;
+}
+function vSMarket() {
+  const sectors = [...new Set(TICK.map((t) => t.sector))];
+  let L = TICK.map((t) => ({ ...t, q: Q(t.code) })).filter((t) => t.q);
+  if (mktSector) L = L.filter((t) => t.sector === mktSector);
+  if (mktQuery) { const x = mktQuery.trim(); L = L.filter((t) => t.name.includes(x) || t.code.startsWith(x)); }
+  const BV = {}; L.forEach((t) => (BV[t.code] = buyView(t.code)));
+  const rank = (t) => { const b = BV[t.code]; if (!b) return 99; return ({ gain: 0, warn: 1, loss: 2 }[b.tone] ?? 1) * 10 - (b.a.score || 0); };
+  const key = { best: rank, up: (t) => -(dayChg(t.q)?.pct ?? -999), down: (t) => (dayChg(t.q)?.pct ?? 999), yld: (t) => -((t.q.div || 0) / t.q.p) }[smSort];
+  L.sort((a, b) => key(a) - key(b));
+  const secStats = sectors.map((sec) => { const qs = TICK.filter((t) => t.sector === sec).map((t) => Q(t.code)).filter(Boolean);
+    return { sec, ch: qs.length ? qs.reduce((a, q) => a + (dayChg(q)?.pct ?? 0), 0) / qs.length : 0, n: qs.length }; });
+  const heat = (ch) => { const k = Math.round((Math.min(Math.abs(ch) / 3, 1) * 0.85 + 0.15) * 60); return `background:color-mix(in srgb,var(--${ch >= 0 ? 'gain' : 'loss'}) ${k}%,var(--surface))`; };
+  const line = (t) => { const b = BV[t.code] || buyView(t.code), pv = plainVerdict(b), r = planRole(t.code);
+    const chip = r ? `<span class="vchip ${r[0]}">${r[1]}</span>` : pv ? `<span class="vchip ${pv[0]}">${pv[1]}</span>` : '';
+    return `<div class="buyline">${chip}</div>${!r && b ? `<div class="whyline">${b.why}</div>` : ''}`; };
+  const W = S.watch.map((w) => ({ code: w.code, name: Q(w.code)?.n || w.name || w.code, q: Q(w.code) })).filter((w) => w.q);
+  return `${marketCard(true)}
+    ${S.plan?.approved ? '<div class="s-sub" style="padding:0 4px">خطتك تشتري من سلّتك بس. هذي الصفحة عشان تعرف وش يصير في السوق.</div>' : ''}
+    <section class="sec"><div class="sec-h"><h2>القطاعات</h2><span class="meta">اضغط على قطاع</span></div>
+      <div class="heat">${secStats.map((x) => `<button class="tile" data-act="sector" data-k="${esc(x.sec)}" style="${heat(x.ch)}" aria-pressed="${mktSector === x.sec}"><span>${esc(x.sec)}</span><b>${pct(x.ch, 2)}</b><small>${num(x.n)} سهم</small></button>`).join('')}</div></section>
+    ${W.length ? `<section class="sec"><div class="sec-h"><h2>👀 اللي تراقبها</h2></div><div class="list">${W.map((w) => row(w.code, w.name, w.q, null, line(w)).replace('data-act="detail"', 'data-act="shold"')).join('')}</div></section>` : ''}
+    <section class="sec"><div class="sec-h"><h2>كل الأسهم</h2><span class="meta">${num(L.length)} سهم</span></div>
+      <label class="search"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg><input id="mktSearch" type="search" placeholder="ابحث باسم الشركة أو الرمز" value="${esc(mktQuery)}" autocomplete="off"></label>
+      <div class="chips">${[['best', 'الأفضل'], ['up', 'الطالعة اليوم'], ['down', 'النازلة اليوم'], ['yld', 'أعلى توزيعات']].map(([k, l]) => `<button class="chip" data-act="smsort" data-k="${k}" aria-pressed="${smSort === k}">${l}</button>`).join('')}${mktSector ? `<button class="chip" data-act="sector" data-k="" aria-pressed="true">✕ ${esc(mktSector)}</button>` : ''}</div>
+      <div class="list">${L.slice(0, 150).map((t) => row(t.code, t.name, t.q, null, line(t)).replace('data-act="detail"', 'data-act="shold"')).join('') || '<div class="calm">ما فيه نتائج</div>'}</div>
+    </section>
+    <div class="note">«كويس» و«راقب» و«ابتعد» قراءة آلية من الأرقام والأخبار، مو وعد بربح.</div>${foot()}`;
 }
 function simpleIntro(c) {
   const B = pickBasket(coreScreen()); const deploy = Math.max(0, S.cash - 0.1 * c.total);
@@ -652,13 +749,14 @@ function vToday() {
   if (!S.holdings.length && !S.cash) return `<section class="s-head"><h2>أهلاً 👋</h2><div class="s-sub">أول شي نحمّل محفظتك.</div></section>${vaultCard()}`;
   const hr = new Date(Date.now() + 3 * 3600e3).getUTCHours();
   const top = moneyCard(c, `${hr < 12 ? 'صباح الخير' : 'مساء الخير'} · فلوسك كلها`);
-  if (!P.approved) return top + simpleIntro(c);
+  if (!P.approved) return top + marketCard(false) + simpleIntro(c);
   syncPlan();
   const steps = planSteps(c), act = steps.filter((x) => x.kind !== 'wait');
   const stale = M?.marketTime && Date.now() / 1000 - M.marketTime > 4 * 86400;
   const mo = P.month; const nextM = AR_MONTHS[+ses.key.slice(5, 7) % 12];
   return `${top}
     ${stale ? '<div class="s-warn">⚠️ الأسعار عندي قديمة. لا تنفّذ شي لين تتحدث (اضغط ↻ فوق).</div>' : ''}
+    ${marketCard(false)}
     <section class="s-head"><h2>${act.length ? 'وش تسوي اليوم؟' : 'اليوم ما عليك شي ✓'}</h2>
       <div class="s-sub">${ses.live ? 'جلسة اليوم' : 'الجلسة الجاية'}: ${ses.label}${act.length ? ` · ${num(act.length)} ${act.length === 1 ? 'خطوة' : 'خطوات'} بالترتيب` : ''}</div></section>
     ${steps.length ? steps.map(simpleStep).join('') : '<div class="s-calm"><div class="s-big">☕</div><b>ارتاح</b><div>ما فيه شي تسويه. وإذا صار شي بقول لك الساعة ١٠ الصبح.</div></div>'}
@@ -673,10 +771,19 @@ function vMoney() {
   return `${moneyCard(c, 'فلوسك كلها')}
     <div class="s-cards">
       <div class="s-card s-cash"><div><b>💵 كاش جاهز</b><div class="s-sub">فلوس في حسابك ما استخدمناها للحين</div></div><div class="s-amt">${fmt(S.cash, 0)}</div></div>
-      ${c.H.sort((a, b) => b.value - a.value).map((h) => { const r = role(h); return `<button class="s-card s-hold" data-act="shold" data-code="${h.code}">
+      ${c.H.sort((a, b) => b.value - a.value).map((h) => { const r = role(h); const E = P.exits?.[h.code];
+        const plan = !P.approved ? '' : P.basket.includes(h.code) ? 'ما نبيعه عشان نزل. نجمع فيه كل شهر على المدى الطويل.'
+          : h.keep ? 'تركته برا الخطة، فما بطلب منك تبيعه.' : E ? `نبيعه بهدوء: معروض بـ ${num(fmt(E.sellAt))}، ونطلع فوراً لو نزل تحت ${num(fmt(E.floor))}.` : h.stop != null ? `حد الأمان: لو نزل تحت ${num(fmt(h.stop))} نبيعه.` : '';
+        return `<button class="s-card s-hold" data-act="shold" data-code="${h.code}">
         <div class="s-hold-top"><b>${esc(nameOf(h))}</b>${r ? `<span class="vchip ${r[0]}">${r[1]}</span>` : ''}</div>
-        <div class="s-hold-row"><span>عندك ${num(h.qty)} سهم</span><span>قيمتها ${num(fmt(h.value, 0))} ريال</span></div>
-        <div class="s-hold-row">${h.pnl >= 0 ? `<span class="up-t">ربحان ${num(fmt(h.pnl, 0))} ريال</span>` : `<span class="down-t">خسران ${num(fmt(-h.pnl, 0))} ريال</span>`}<span class="s-sub">${dayWord(h.dayPct, live)}</span></div>
+        <div class="s-hold-grid">
+          <div><span>عندك</span><b>${num(h.qty)} سهم</b></div><div><span>سعره الحين</span><b>${num(fmt(h.p))}</b></div>
+          <div><span>متوسط شرايك</span><b>${num(fmt(h.cost))}</b></div><div><span>قيمتها</span><b>${num(fmt(h.value, 0))} ريال</b></div>
+        </div>
+        <div class="s-hold-row">${h.pnl >= 0 ? `<span class="up-t">ربحان ${num(fmt(h.pnl, 0))} ريال (${pct(h.pnlPct)})</span>` : `<span class="down-t">خسران ${num(fmt(-h.pnl, 0))} ريال (${pct(h.pnlPct)})</span>`}<span class="s-sub">${dayWord(h.dayPct, live)}</span></div>
+        ${h.income ? `<div class="s-sub">💰 توزيعاته لك: حوالي ${num(fmt(h.income, 0))} ريال بالسنة</div>` : ''}
+        ${plan ? `<div class="s-plan">📌 ${plan}</div>` : ''}
+        <div class="s-tapmore">اضغط للتحليل والرسم ←</div>
       </button>`; }).join('')}
     </div>
     ${P.approved ? `<section class="s-card"><h2>🧺 سلّتك: الشركات الخمس</h2><div class="s-sub">هذي اللي نشتري منها شوي كل شهر.</div>
@@ -686,14 +793,27 @@ function vMoney() {
     ${histCard()}${foot()}`;
 }
 function shHold(st) {
-  const code = st.code, q = Q(code), h = calc().H.find((x) => x.code === code), P = S.plan;
-  const inB = P.basket?.includes(code);
-  const say = !P.approved ? 'لما تبدأ الخطة بقول لك وش نسوي فيه.' : inB ? 'هذا من سلّتك. نجمع فيه على المدى الطويل، وما نبيعه عشان نزل.' : h?.keep ? 'طلّعته من الخطة، فما راح أطلب منك تبيعه.' : `أرقام هالشركة ضعيفة (${esc(failsOf(code)[0] || '')})، فالخطة تبيعه بهدوء.`;
-  return `<div class="sh-h"><div><h2>${esc(q?.n || code)}</h2><div class="code">${code}</div></div><button class="btn ghost" data-act="close">إغلاق</button></div>
-    ${h ? `<div class="kv"><div class="cell"><div class="k">عندك</div><div class="v">${num(h.qty)} سهم</div></div><div class="cell"><div class="k">سعره الحين</div><div class="v">${fmt(h.p)}</div></div>
-      <div class="cell"><div class="k">اشتريته بمتوسط</div><div class="v">${fmt(h.cost)}</div></div><div class="cell"><div class="k">${h.pnl >= 0 ? 'ربحك' : 'خسارتك'}</div><div class="v ${h.pnl >= 0 ? 'up' : 'down'}-t">${fmt(Math.abs(h.pnl), 0)} ريال</div></div></div>` : ''}
-    <div class="s-card"><b>وش الخطة فيه؟</b><div>${say}</div></div>
-    ${q?.c ? `<div class="chart">${bigChart(q, 130, h ? [{ v: h.cost, col: 'var(--faint)' }] : [])}</div><div class="s-sub">الخط الرمادي المتقطع: سعر شرايك. الذهبي: متوسط سعر آخر ٥٠ يوم.</div>` : ''}`;
+  const code = st.code, q = Q(code), h = calc().H.find((x) => x.code === code), P = S.plan, E = P.exits?.[code];
+  if (!q) return `<div class="sh-h"><h2>${esc(code)}</h2><button class="btn ghost" data-act="close">إغلاق</button></div><div class="s-sub">ما عندي أسعار لهذا السهم.</div>`;
+  const inB = P.basket?.includes(code), r = planRole(code), d = dayChg(q), watched = S.watch.some((w) => w.code === code);
+  const say = !P.approved ? 'لما تبدأ الخطة بقول لك وش نسوي فيه.' : inB ? 'هذا من سلّتك. نجمع فيه على المدى الطويل، وما نبيعه عشان نزل.'
+    : h?.keep ? 'طلّعته من الخطة، فما راح أطلب منك تبيعه.' : h ? `أرقام هالشركة ضعيفة (${esc(failsOf(code)[0] || '')})، فالخطة تبيعه بهدوء.${E ? ` معروض بـ ${num(fmt(E.sellAt))}، ونطلع فوراً لو نزل تحت ${num(fmt(E.floor))}.` : ''}` : 'مو من سلّتك، فالخطة ما تشتريه.';
+  const bars = st.bars || 130; const yl = q.div && q.p ? q.div / q.p * 100 : null;
+  return `<div class="sh-h"><div><h2>${esc(q.n || code)}</h2><div class="code">${code} · ${esc(TICK.find((t) => t.code === code)?.sector || '')}</div></div>
+      <div style="text-align:left"><div class="p">${fmt(q.p)}</div><span class="chg ${dir(d?.pct)}">${pct(d?.pct, 2)}</span></div></div>
+    ${h ? `<div class="kv"><div class="cell"><div class="k">عندك</div><div class="v">${num(h.qty)} سهم</div></div><div class="cell"><div class="k">متوسط شرايك</div><div class="v">${fmt(h.cost)}</div></div>
+      <div class="cell"><div class="k">قيمتها</div><div class="v">${fmt(h.value, 0)} ريال</div></div><div class="cell"><div class="k">${h.pnl >= 0 ? 'ربحك' : 'خسارتك'}</div><div class="v ${h.pnl >= 0 ? 'up' : 'down'}-t">${fmt(Math.abs(h.pnl), 0)} ريال (${pct(h.pnlPct)})</div></div></div>` : ''}
+    ${P.approved ? `<div class="s-card"><div class="s-mkt-top"><b>📌 وش الخطة فيه؟</b>${r ? `<span class="vchip ${r[0]}">${r[1]}</span>` : ''}</div><div>${say}</div></div>` : ''}
+    <div class="chart">${bigChart(q, bars, chartLines(code))}
+      <div class="ranges">${[[22, 'شهر'], [65, '٣ أشهر'], [130, '٦ أشهر']].map(([n, l]) => `<button class="chip" data-act="bars" data-n="${n}" aria-pressed="${bars === n}">${l}</button>`).join('')}</div></div>
+    <div class="s-sub">${h ? '┅ رمادي: متوسط شرايك · ' : ''}${E ? '┅ أخضر: سعر البيع اللي نبيه · ┅ أحمر: نطلع لو نزل تحته · ' : ''}┅ ذهبي: متوسط سعره آخر ٥٠ يوم</div>
+    <div class="kv">
+      <div class="cell"><div class="k">أعلى سعر بالسنة</div><div class="v">${fmt(q.h52)}</div></div><div class="cell"><div class="k">أدنى سعر بالسنة</div><div class="v">${fmt(q.l52)}</div></div>
+      <div class="cell"><div class="k">آخر شهر / ٣ أشهر</div><div class="v"><span class="${dir(perf(q, 21))}-t">${pct(perf(q, 21))}</span> / <span class="${dir(perf(q, 63))}-t">${pct(perf(q, 63))}</span></div></div>
+      <div class="cell"><div class="k">توزيعات بالسنة</div><div class="v">${yl ? `${fmt(q.div)} ريال (${yl.toFixed(1)}%)` : 'ما توزع'}</div></div>
+    </div>
+    <div class="s-card"><b>🧠 رأيي فيه</b>${plainAnalysis(code, false)}</div>
+    <div class="two">${watched ? `<button class="btn" data-act="watch-del" data-code="${code}">شيله من المراقبة</button>` : `<button class="btn" data-act="watch-add" data-code="${code}">👀 راقبه</button>`}<button class="btn ghost" data-act="close">إغلاق</button></div>`;
 }
 function vHelp() {
   const ex = { side: 'buy', code: '7020', qty: 11, price: 56.90 };
@@ -1334,6 +1454,9 @@ document.addEventListener('click', async (e) => {
     case 'mode-adv': setMode(true); break;
     case 'mode-simple': setMode(false); break;
     case 'shold': openSheet({ type: 'shold', code: t.dataset.code }); break;
+    case 'smsort': smSort = t.dataset.k; render(); break;
+    case 'watch-add': if (!S.watch.some((w) => w.code === t.dataset.code)) S.watch.push({ id: uid(), code: t.dataset.code }); save(); renderSheet(); render(); toast('أضفته للمراقبة 👀'); break;
+    case 'watch-del': S.watch = S.watch.filter((w) => w.code !== t.dataset.code); save(); renderSheet(); render(); toast('شلته من المراقبة'); break;
     case 's-done': { const stp = planSteps(calc()).find((x) => x.id === t.dataset.id); if (stp) openSheet({ type: 'sdone', step: stp }); break; }
     case 'sdone-same': applyFill(st.step, st.step.qty, likelyPx(st.step)); closeSheet(); render(); toast('تمام! حدّثت فلوسك ✓'); break;
     case 'sdone-edit': st.edit = true; renderSheet(); break;
@@ -1452,7 +1575,7 @@ function readImportHash() {
 
 /* ───────── التشغيل ───────── */
 async function boot() {
-  const h = location.hash.slice(1); if (['today', 'money', 'help', 'steps', 'home', 'holdings', 'market', 'watch', 'learn'].includes(h)) view = h;
+  const h = location.hash.slice(1); if (['today', 'money', 'smarket', 'help', 'steps', 'home', 'holdings', 'market', 'watch', 'learn'].includes(h)) view = h;
   if (simple && !SIMPLE_VIEWS.includes(view)) view = 'today';
   if (!simple && SIMPLE_VIEWS.includes(view)) view = 'steps';
   renderTabs();
