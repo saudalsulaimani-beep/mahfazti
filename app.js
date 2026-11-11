@@ -60,6 +60,7 @@ async function fetchMarket(manual) {
     const r = await fetch('data/market.json?t=' + Date.now(), { cache: 'no-store' });
     if (!r.ok) throw new Error(r.status);
     M = await r.json(); lastFetch = Date.now(); liveAt = null;
+    if (Date.now() - sigAt > 3 * 3600e3) await fetchSignals();
     buildMarketTrend();
     if (manual) toast('الأسعار محدّثة');
   } catch {
@@ -219,7 +220,8 @@ function alerts(c) {
     else if (h.stop != null && p <= h.stop * 1.03) out.push({ t: 'warn', i: '↓', tag: 'قريب من الوقف', code: h.code,
       title: `${nm} يبعد ${num(((p - h.stop) / p * 100).toFixed(1) + '%')} عن وقف الخسارة`,
       why: `السعر ${num(fmt(p))} والوقف ${num(fmt(h.stop))}. جهّز قرارك من الحين.` });
-    if (h.target != null && p >= h.target) out.push({ t: 'gain', i: '✓', tag: 'وصل هدفك', code: h.code,
+    out.push(...xpAlerts(h, nm));
+    if (h.target != null && p >= h.target && !h.xp) out.push({ t: 'gain', i: '✓', tag: 'وصل هدفك', code: h.code,
       title: `${nm} وصل الهدف ${num(fmt(h.target))}`,
       why: `رابح ${num(pct(h.pnlPct))}. الخيارات المعتادة: تبيع، أو تبيع جزء وترفع الوقف عشان تحمي الربح.` });
     if (h.dayPct != null && Math.abs(h.dayPct) >= 5) out.push({ t: 'info', i: h.dayPct > 0 ? '↑' : '↓', tag: 'حركة قوية اليوم', code: h.code,
@@ -418,6 +420,165 @@ function lvlLine(L) {
   if (!L) return '';
   return `دخول ${num(fmt(L.entry))} · وقف ${num(fmt(L.stop))} · هدف ${num(fmt(L.target))}`;
 }
+/* ═════════ آلة الزمن + مخطط الخروج ═════════
+   فكرتها من حزمة Trader Skill (Time Machine و Exit Planner)، ومعدّلة للسوق السعودي ولخطتك:
+   ١) «اللي صار فعلاً»: من data/signals.json — ٥ سنين أسعار يومية لكل سهم، تتحسب كل يوم بعد الإغلاق
+   ٢) «لو الحركة عشوائية»: ١٠٬٠٠٠ مسار من حركات السهم اليومية آخر سنة (قطع ٥ أيام)، بدون افتراض اتجاه
+   الأرقام احتمالات من الماضي، مو توقع. ما فيه أحد يعرف القمة والقاع مسبقاً. */
+let SIG = {}, sigAt = 0;
+const SG = (code) => SIG.s?.[code] || null;
+async function fetchSignals() {
+  try { const r = await fetch('data/signals.json?t=' + Date.now(), { cache: 'no-store' }); if (r.ok) { SIG = await r.json(); sigAt = Date.now(); _mc.clear(); } } catch { /* بدونها التطبيق يشتغل عادي */ }
+}
+const pc0 = (x) => num(x == null ? '—' : Math.round(x) + '%');
+function seeded(seed) { let a = seed >>> 0; return () => { a = (a + 0x6D2B79F5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
+const _mc = new Map();
+/* وش يصير أول خلال horizon جلسة: يوصل target ولا ينزل لـ stop؟ (على أسعار الإغلاق) */
+function mcOdds(code, p, stop, target, horizon = 60) {
+  const c = Q(code)?.c; if (!c || c.length < 120 || !p) return null;
+  const key = `${code}|${p}|${stop}|${target}|${horizon}`; if (_mc.has(key)) return _mc.get(key);
+  const R = []; for (let i = 1; i < c.length; i++) if (c[i] > 0 && c[i - 1] > 0) R.push(Math.log(c[i] / c[i - 1]));
+  if (R.length < 60) return null;
+  const mu = R.reduce((a, b) => a + b, 0) / R.length, Z = R.map((r) => r - mu);
+  const ls = stop ? Math.log(stop / p) : -Infinity, lt = target ? Math.log(target / p) : Infinity;
+  const rand = seeded([...code].reduce((a, ch) => (a * 31 + ch.charCodeAt(0)) | 0, 7) + horizon);
+  const PATHS = 10000, BL = 5; let w = 0, l = 0;
+  for (let s = 0; s < PATHS; s++) {
+    let x = 0, k = 0, res = 0;
+    while (k < horizon && !res) {
+      const st = Math.floor(rand() * (Z.length - BL));
+      for (let b = 0; b < BL && k < horizon; b++, k++) { x += Z[st + b]; if (x <= ls) { res = -1; break; } if (x >= lt) { res = 1; break; } }
+    }
+    if (res > 0) w++; else if (res < 0) l++;
+  }
+  const out = { w: w / PATHS * 100, l: l / PATHS * 100, o: (PATHS - w - l) / PATHS * 100 };
+  if (_mc.size > 300) _mc.clear(); _mc.set(key, out); return out;
+}
+/* كم يتحرك السهم عادةً باليوم (ATR ١٤ يوم) */
+function atrOf(code) {
+  const g = SG(code); if (g?.atr) return g.atr;
+  const c = Q(code)?.c; if (!c || c.length < 20) return null;
+  let s = 0; for (let i = c.length - 14; i < c.length; i++) s += Math.abs(c[i] - c[i - 1]); return s / 14 * 1.3;
+}
+const yrsOf = (g) => num(Math.round(g?.yrs || 5));
+
+/* مخطط الخروج: وقف تحت أقرب دعم، هدف أول (بيع الثلث) عند أقرب مقاومة، هدف ثاني (الثلث الثاني) عند اللي بعدها،
+   والثلث الأخير يمشي مع وقف متحرك (أعلى سعر − ٢٫٥ × الحركة اليومية) */
+const TRAIL_K = 2.5;
+function exitPlanFor(code, p) {
+  const A = atrOf(code), g = SG(code); if (!p || !A) return null;
+  const sup = (g?.sr?.s || []).map((x) => x.v).filter((v) => v <= p - A).sort((a, b) => b - a);
+  const res = (g?.sr?.r || []).map((x) => x.v).filter((v) => v >= p + A).sort((a, b) => a - b);
+  let stop = sup.length ? sup[0] - 0.5 * A : p - TRAIL_K * A;
+  if (stop < p * 0.85) stop = Math.max(p - TRAIL_K * A, p * 0.85);
+  stop = rnd(stop);
+  let t1 = res.length ? res[0] * 0.995 : p + 2 * A; t1 = rnd(Math.max(t1, p + A));
+  const r2nd = res.find((v) => v * 0.995 >= t1 * 1.03);
+  const t2 = rnd(r2nd ? r2nd * 0.995 : Math.max(t1 + 2 * A, t1 * 1.05));
+  return { p, A, stop, t1, t2, o1: mcOdds(code, p, stop, t1, 60), o2: mcOdds(code, p, stop, t2, 60), fromSR: !!(sup.length || res.length) };
+}
+function xpTrail(h) { const A = atrOf(h.code); const p = Q(h.code)?.p; if (!h.xp || !A || !p) return null; return rnd(Math.max(h.xp.hi || 0, p) - TRAIL_K * A); }
+/* يحدّث أعلى سعر من اعتماد الخطة، ويرفع الوقف (ما ينزل أبداً) بعد ما يتحقق الهدف الأول */
+function xpSync() {
+  let ch = false;
+  for (const h of S.holdings) {
+    if (!h.xp) continue; const p = Q(h.code)?.p; if (!p) continue;
+    if (p > (h.xp.hi || 0)) { h.xp.hi = p; ch = true; }
+    if (h.xp.t1done) { const tr = xpTrail(h); if (tr && tr > (h.stop ?? 0) && tr < p) { h.stop = tr; ch = true; } }
+  }
+  if (ch) save();
+}
+function xpAlerts(h, nm) {
+  const out = [], x = h.xp, p = h.p; if (!x || p == null) return out;
+  const n1 = Math.max(1, Math.ceil(h.qty / 3));
+  if (!x.t1done && p >= x.t1) out.push({ t: 'gain', i: '✓', tag: 'الهدف الأول', code: h.code,
+    title: `${nm} وصل الهدف الأول ${num(fmt(x.t1))}`, why: `مخطط الخروج يقول: بيع الثلث (${num(n1)} سهم) وخل الباقي. بعدها الوقف يرتفع مع السعر ويحمي ربحك.` });
+  else if (x.t1done && !x.t2done && p >= x.t2) out.push({ t: 'gain', i: '✓', tag: 'الهدف الثاني', code: h.code,
+    title: `${nm} وصل الهدف الثاني ${num(fmt(x.t2))}`, why: `مخطط الخروج يقول: بيع نص الباقي (${num(Math.max(1, Math.ceil(h.qty / 2)))} سهم)، والأخير يمشي مع الوقف المتحرك ${num(fmt(h.stop))}.` });
+  return out;
+}
+
+/* جدول «وش صار في ٥ سنين»: كم مرة وصل السهم سعر أعلى/أقل خلال أسبوعين، شهر، ٣ أشهر */
+function reachTable(code, p, owned) {
+  const g = SG(code); if (!g?.reach) return '';
+  const row = (k, up) => { const arr = g.reach[up ? 'u' : 'd'][k] || []; const px = p * (1 + (up ? k : -k) / 100);
+    return `<tr class="${up ? 'up' : 'down'}"><th><bdi class="num">${up ? '+' : '−'}${k}%</bdi><small>${fmt(px)}</small></th>${arr.map((v) => `<td>${pc0(v)}</td>`).join('')}</tr>`; };
+  const u5 = g.reach.u['5']?.[1], d3 = g.reach.d['3']?.[0];
+  return `<table class="tm-t"><thead><tr><th>لو وصل</th><th>خلال أسبوعين</th><th>شهر</th><th>٣ أشهر</th></tr></thead>
+    <tbody>${['10', '5', '3'].map((k) => row(k, true)).join('')}${['3', '5', '10'].map((k) => row(k, false)).join('')}</tbody></table>
+    <div class="whyline">${owned
+      ? `يعني: لو حطيت طلب بيع أعلى من سعر اليوم بـ ٥٪ (${num(fmt(p * 1.05))})، في آخر ${yrsOf(g)} سنين وصله السهم خلال شهر في ${pc0(u5)} من المرات، وفي الباقي ما وصله.`
+      : `يعني: لو تنتظر ينزل ٣٪ (${num(fmt(p * 0.97))}) عشان تشتري أرخص، في آخر ${yrsOf(g)} سنين صار خلال أسبوعين في ${pc0(d3)} من المرات بس، وفي الباقي فاتك.`}</div>`;
+}
+function srLine(code, p) {
+  const g = SG(code), A = atrOf(code); if (!g) return '';
+  const s = (g.sr?.s || []).filter((x) => x.v < p).slice(0, 2), r = (g.sr?.r || []).filter((x) => x.v > p).slice(0, 2);
+  return `<div class="whyline">${A ? `يتحرك عادةً حوالي ${num(fmt(A))} ريال باليوم (${num((A / p * 100).toFixed(1) + '%')}). ` : ''}${s.length ? `أسعار ارتد منها قبل (دعم): ${s.map((x) => num(fmt(x.v))).join(' و')}. ` : ''}${r.length ? `أسعار رجع منها نازل قبل (مقاومة): ${r.map((x) => num(fmt(x.v))).join(' و')}.` : ''}</div>`;
+}
+/* قاعدة «كويس للشراء» في التطبيق: وش صار لما تكررت على نفس السهم */
+function buySetupLine(code, L) {
+  const g = SG(code); if (!g?.buy || !L) return '';
+  const b = g.buy[L.up ? 'up' : 'dn']; const mc = mcOdds(code, L.entry, L.stop, L.target, 40);
+  return `<div class="whyline">⏳ <b>آلة الزمن:</b> ${b?.n >= 5 ? `قاعدة الدخول هذي (${L.up ? 'والاتجاه صاعد' : 'والاتجاه هابط'} مثل الحين)، لما طبقناها على نفس السهم في آخر ${yrsOf(g)} سنين، تكررت ${num(b.n)} مرة: وصل الهدف ${pc0(b.w)}، ضرب الوقف ${pc0(b.l)}، ومتوسط النتيجة ${pct(b.avg)} بعد العمولة.` : 'ما تكرر هالوضع كفاية في آخر ٥ سنين عشان نحكم.'}${mc ? ` ولو الحركة عشوائية بنفس تذبذبه: الهدف أول ${pc0(mc.w)} · الوقف أول ${pc0(mc.l)} خلال ٤٠ جلسة.` : ''}</div>`;
+}
+/* سطر للخروج المنظم (الأسهم برا السلة) */
+function tmExitLine(code, E, p, left) {
+  const g = SG(code), ex = g?.ex, mc = mcOdds(code, p, E.floor, E.sellAt, Math.max(1, left));
+  if (!ex?.n && !mc) return '';
+  return `⏳ آلة الزمن: ${mc ? `من سعر اليوم، احتمال يوصل ${num(fmt(E.sellAt))} قبل ما ينزل تحت ${num(fmt(E.floor))} خلال ${num(Math.max(1, left))} جلسات تقريباً ${pc0(mc.w)}. ` : ''}${ex?.n ? `وفي آخر ${yrsOf(g)} سنين، نفس طريقة البيع هذي على نفس السهم: انباع بالسعر الأعلى ${pc0(ex.w)} من المرات، نزل لحد الحماية ${pc0(ex.l)}، والباقي انتهت المهلة وبعناه بسعر السوق.` : ''}`;
+}
+function tmBuyLine(code) {
+  const d3 = SG(code)?.reach?.d?.['3']?.[0]; if (d3 == null) return '';
+  return `⏳ تقدر تنتظر سعر أرخص؟ في آخر ٥ سنين، نزل ٣٪ تحت سعره خلال أسبوعين في ${pc0(d3)} من المرات بس. عشان كذا نشتري حصة الشهر بدون ما نحاول نصيد القاع.`;
+}
+
+/* بطاقة «متى أبيع؟ متى أشتري؟» — في صفحة كل سهم */
+function timingCard(code) {
+  const q = Q(code), g = SG(code); if (!q?.p || !g || code === 'TASI') return '';
+  const held = S.holdings.some((h) => h.code === code), inB = !!(S.plan?.approved && S.plan.basket?.includes(code));
+  const owned = held && !inB, b = held ? null : buyView(code);
+  return `<section class="s-card tm"><b>⏳ آلة الزمن: ${owned ? 'متى أبيع؟' : inB ? 'وش صار في حركته؟' : 'متى أشتري؟'}</b>
+    <div class="s-sub">من كل يوم في آخر ${yrsOf(g)} سنين: كم مرة وصل السهم لسعر أعلى أو أقل من سعره خلال المدة.</div>
+    ${reachTable(code, q.p, owned)}
+    ${srLine(code, q.p)}
+    ${b?.L ? buySetupLine(code, b.L) : ''}
+    <div class="an-date">احتمالات من اللي صار، مو توقع. ما فيه أحد يعرف القمة والقاع مسبقاً. محسوبة ${num(g.d || '')}.</div>
+  </section>`;
+}
+/* بطاقة «مخطط الخروج» — للأسهم اللي تملكها */
+function exitCard(code) {
+  const h = calc().H.find((x) => x.code === code); if (!h || h.p == null) return '';
+  const P = S.plan, E = P?.exits?.[code];
+  const head = '<b>🚪 مخطط الخروج</b>';
+  if (P?.approved && h.spec) return `<section class="s-card tm">${head}<div class="s-sub">هذي صفقة مضاربة، ولها هدف وحد أمان خاصين فيها في خطواتك.</div></section>`;
+  if (P?.approved && P.basket.includes(code)) return `<section class="s-card tm">${head}<div class="s-sub">هذا من سلّتك، والخطة ما تبيعه عشان سعره تحرك. يطلع بس إذا فشلت الشركة في الفحص (خسائر، أرباح تنهار، توزيعات توقف). جدول آلة الزمن تحت للمعلومة.</div></section>`;
+  if (P?.approved && E) {
+    const ses = session(), left = Math.max(1, 10 - sessionsBetween(E.start, ses.date));
+    return `<section class="s-card tm">${head}<div class="s-sub">الخطة تبيعه بهدوء: طلب بيع عند ${num(fmt(E.sellAt))}، ونطلع فوراً لو نزل تحت ${num(fmt(E.floor))}.</div><div class="whyline">${tmExitLine(code, E, h.p, left)}</div></section>`;
+  }
+  const x = h.xp;
+  if (x) {
+    const n1 = Math.max(1, Math.ceil(h.qty / 3));
+    return `<section class="s-card tm">${head}<div class="s-sub">اعتمدته بتاريخ ${num(x.at)}. التطبيق ينبهك عند كل مستوى.</div>
+      <div class="lv-grid xp-grid"><div><span>الوقف ${x.t1done ? '(متحرك)' : ''}</span><b class="down-t">${num(fmt(h.stop))}</b></div>
+        <div><span>هدف ١: بيع الثلث</span><b class="up-t">${num(fmt(x.t1))}${x.t1done ? ' ✓' : ''}</b></div>
+        <div><span>هدف ٢: الثلث الثاني</span><b class="up-t">${num(fmt(x.t2))}${x.t2done ? ' ✓' : ''}</b></div></div>
+      <div class="whyline">${x.t1done ? `بعد الهدف الأول، الوقف يرتفع مع السعر: أعلى سعر (${num(fmt(Math.max(x.hi || 0, h.p)))}) ناقص ${num(TRAIL_K)} × حركته اليومية. ما ينزل أبداً.` : `لو وصل ${num(fmt(x.t1))}: بيع ${num(n1)} سهم، وبعدها الوقف يصير متحرك ويحمي ربحك.`}</div>
+      <div class="two">${!x.t1done ? `<button class="btn" data-act="xp-done" data-code="${code}" data-k="1">✓ بعت الثلث الأول</button>` : !x.t2done ? `<button class="btn" data-act="xp-done" data-code="${code}" data-k="2">✓ بعت الثلث الثاني</button>` : '<span></span>'}<button class="btn ghost" data-act="xp-off" data-code="${code}">ألغِ المخطط</button></div>
+    </section>`;
+  }
+  const X = exitPlanFor(code, h.p); if (!X) return '';
+  const n1 = Math.max(1, Math.ceil(h.qty / 3)), n2 = Math.max(0, Math.ceil((h.qty - n1) / 2));
+  return `<section class="s-card tm">${head}
+    <div class="s-sub">خطة بيع على ٣ دفعات بدل ما تبيع كله مرة وحدة وتندم على التوقيت. المستويات من حركة السهم نفسه${X.fromSR ? ' (أسعار ارتد منها أو رجع منها قبل)' : ''}.</div>
+    <div class="lv-grid xp-grid"><div><span>وقف خسارة</span><b class="down-t">${num(fmt(X.stop))}</b></div><div><span>هدف ١: بيع ${num(n1)}</span><b class="up-t">${num(fmt(X.t1))}</b></div><div><span>هدف ٢: بيع ${num(n2)}</span><b class="up-t">${num(fmt(X.t2))}</b></div></div>
+    <div class="whyline">الباقي (${num(Math.max(0, h.qty - n1 - n2))} سهم) يمشي مع وقف متحرك: أعلى سعر يوصله ناقص ${num(TRAIL_K)} × حركته اليومية (${num(fmt(X.A))}).</div>
+    <div class="kv"><div class="cell"><div class="k">لو ضرب الوقف</div><div class="v down-t">${sgn((X.stop - h.p) * h.qty, 0)} ريال</div></div><div class="cell"><div class="k">ربح الدفعة الأولى</div><div class="v up-t">${sgn((X.t1 - h.p) * n1, 0)} ريال</div></div></div>
+    ${X.o1 ? `<div class="whyline">⏳ لو الحركة عشوائية بنفس تذبذبه، خلال ٣ أشهر: يوصل الهدف الأول قبل الوقف ${pc0(X.o1.w)}، الوقف قبل الهدف ${pc0(X.o1.l)}، ولا هذا ولا هذا ${pc0(X.o1.o)}. والهدف الثاني قبل الوقف ${pc0(X.o2?.w)}.</div>` : ''}
+    <button class="btn pri block" data-act="xp-apply" data-code="${code}" data-stop="${X.stop}" data-t1="${X.t1}" data-t2="${X.t2}">اعتمد المخطط</button>
+    <div class="an-date">مستويات محسوبة، مو توصية. القرار لك.</div>
+  </section>`;
+}
 function ownerBox(a) {
   const h = a.own; const q = Q(a.code); const L = levels(q); if (!h || !q) return '';
   const stop = h.stop ?? L?.stop, target = h.target ?? L?.target;
@@ -453,7 +614,7 @@ function analysisBlock(a) {
       return b.own ? `<div class="lv-box"><b>وقف خسارة مقترح:</b> ${num(fmt(L.stop))} <span class="explain">(تحت أدنى سعر بآخر ٢٠ جلسة بـ ٣٪)</span></div>`
         : `<div class="lv-box"><div><span class="vchip ${b.tone}">${b.label}</span></div>
           <div class="lv-grid"><div><span>ادخل عند</span><b>${num(fmt(L.entry))}</b></div><div><span>وقف خسارة</span><b class="down-t">${num(fmt(L.stop))}</b></div><div><span>هدف أول</span><b class="up-t">${num(fmt(L.target))}</b></div></div>
-          <div class="explain">${b.why} المكسب المتوقع ${num(((L.target - L.entry) / L.entry * 100).toFixed(1) + '%')} مقابل مخاطرة ${num(((L.entry - L.stop) / L.entry * 100).toFixed(1) + '%')}.</div></div>`; })()}
+          <div class="explain">${b.why} المكسب المتوقع ${num(((L.target - L.entry) / L.entry * 100).toFixed(1) + '%')} مقابل مخاطرة ${num(((L.entry - L.stop) / L.entry * 100).toFixed(1) + '%')}.</div>${buySetupLine(a.code, L)}</div>`; })()}
     ${a.note ? `<div class="an-note">${esc(a.note.text)}<div class="an-date">ملاحظة مكتوبة بتاريخ ${num(NOTES.updated || '')}</div></div>` : ''}
     <div class="an-date">تحليل آلي من الأرقام، مو توصية مرخصة. القرار لك.</div>
   </section>`;
@@ -464,6 +625,7 @@ function render() {
   renderStatus();
   const v = $('#view');
   if (!M && !TICK.length) return;
+  if (M) xpSync();
   if (simple && !SIMPLE_VIEWS.includes(view)) view = 'today';
   if (!simple && SIMPLE_VIEWS.includes(view)) view = 'steps';
   document.body.classList.toggle('simple', simple);
@@ -629,6 +791,7 @@ function simpleStep(s, i) {
     <div class="s-step-top"><span class="s-step-n">${s.kind === 'wait' ? '⏳' : num(i + 1)}</span><h3>${P.title}</h3></div>
     <div class="s-why">${P.why}</div>
     ${s.kind === 'order' ? orderForm(s) + `<div class="s-tip">💡 ${s.side === 'buy' ? 'هذا أغلى سعر نقبله، وغالباً بتشتري بأرخص منه.' : 'هذا أرخص سعر نقبله، وغالباً بتبيع بأغلى منه.'} حط الطلب بعد الساعة ١٠:١٥ الصبح.</div>` : ''}
+    ${s.tm ? `<div class="s-tip tm-line">${s.tm}</div>` : ''}
     ${stepDetails(s)}
     ${btns ? `<div class="s-btns">${btns}</div>` : ''}
     ${s.exit ? `<button class="linkbtn" data-act="keep-holding" data-code="${s.code}">ما أبي أبيعه</button>` : ''}
@@ -816,6 +979,7 @@ function shHold(st) {
       <div class="cell"><div class="k">توزيعات بالسنة</div><div class="v">${yl ? `${fmt(q.div)} ريال (${yl.toFixed(1)}%)` : 'ما توزع'}</div></div>
     </div>
     <div class="s-card"><b>🧠 رأيي فيه</b>${plainAnalysis(code, false)}</div>
+    ${exitCard(code)}${timingCard(code)}
     <div class="two">${watched ? `<button class="btn" data-act="watch-del" data-code="${code}">شيله من المراقبة</button>` : `<button class="btn" data-act="watch-add" data-code="${code}">👀 راقبه</button>`}<button class="btn ghost" data-act="close">إغلاق</button></div>`;
 }
 function vHelp() {
@@ -1045,9 +1209,22 @@ function planSteps(c) {
       out.push({ id, kind: 'order', resting: true, side: 'sell', code: h.code, qty: h.qty, price: E.sellAt, tone: 'warn', exit: true,
         title: `حط أمر بيع ${num(h.qty)} سهم من ${esc(nm(h.code))} بسعر ${num(fmt(E.sellAt))}`,
         why: `السهم برا سلة الجودة (${reason}). ما نبيعه عند القاع: نحط أمر بيع أعلى من سعره الحالي ${num(fmt(h.p))} ونعطيه أسبوعين يرتد. وإذا نزل تحت ${num(fmt(E.floor))} نطلع فوراً.`,
-        result: `لو تنفّذ: يرجع لك تقريباً ${num(fmt(h.qty * E.sellAt * (1 - FEE), 0))} ريال.`,
+        result: `لو تنفّذ: يرجع لك تقريباً ${num(fmt(h.qty * E.sellAt * (1 - FEE), 0))} ريال.`, tm: tmExitLine(h.code, E, h.p, left),
         plain: { title: `اعرض أسهمك في ${esc(nm(h.code))} للبيع`, why: `أرقام هالشركة ضعيفة، فبنطلع منها بهدوء. نعرضها بسعر أعلى شوي من سعرها اليوم (${num(fmt(h.p))}) وننتظر أسبوعين. لو نزلت كثير بقول لك تبيع على طول.` } });
     }
+  }
+  // ٢ب. مخطط الخروج (للأسهم اللي تركتها برا الخطة واعتمدت لها مخطط)
+  for (const h of c.H) {
+    const x = h.xp; if (!x || h.p == null || P.exits[h.code] || h.spec || P.basket.includes(h.code) || (h.stop != null && h.p <= h.stop)) continue;
+    const k = !x.t1done && h.p >= x.t1 ? 1 : x.t1done && !x.t2done && h.p >= x.t2 ? 2 : 0; if (!k) continue;
+    const id = `xp${k}-${h.code}-${x.at}`; if (hidden(id)) continue;
+    const qty = k === 1 ? Math.max(1, Math.ceil(h.qty / 3)) : Math.max(1, Math.ceil(h.qty / 2));
+    const price = px(id, rnd(h.p * 0.995));
+    out.push({ id, kind: 'order', side: 'sell', code: h.code, qty, price, tone: 'gain', xp: k,
+      title: `بيع ${num(qty)} سهم من ${esc(nm(h.code))} (الهدف ${k === 1 ? 'الأول' : 'الثاني'})`,
+      why: `وصل ${num(fmt(k === 1 ? x.t1 : x.t2))} حسب مخطط الخروج اللي اعتمدته. نبيع دفعة ونخلي الباقي${k === 1 ? '، وبعدها الوقف يرتفع مع السعر' : ' مع الوقف المتحرك'}.`,
+      result: `يرجع لك تقريباً ${num(fmt(qty * price * (1 - FEE), 0))} ريال.`,
+      plain: { title: `بيع ${num(qty)} سهم من ${esc(nm(h.code))} 🎯`, why: `وصل الهدف ${k === 1 ? 'الأول' : 'الثاني'} في مخطط الخروج. نبيع دفعة ونخلي الباقي يكمل، والوقف يحمي ربحك.` } });
   }
   // ٣. المضاربة: إدارة المفتوح أول، بعدين الجديد
   if (P.spec) {
@@ -1097,7 +1274,7 @@ function planSteps(c) {
       out.push({ id, kind: 'order', side: 'buy', code: pk.code, qty, price, tone: 'gain', pick: i,
         title: `اشتر ${num(qty)} سهم من ${esc(nm(pk.code))}`,
         why: `شراء ${ses.monthName} من سلة الجودة (${num(fmt(mo.amount, 0))} ريال هالشهر). ${esc(nm(pk.code))}: توزيعات ${num(((x?.yl || 0) * 100).toFixed(1) + '%')} وربحية ${num((((x?.roe) || 0) * 100).toFixed(0) + '%')}، ومن أهدى الأسهم حركة. نشتري كل شهر بانتظام بدون ما نحاول نصيد القاع.`,
-        result: `المبلغ تقريباً ${num(fmt(qty * price * (1 + FEE), 0))} ريال كحد أعلى.`,
+        result: `المبلغ تقريباً ${num(fmt(qty * price * (1 + FEE), 0))} ريال كحد أعلى.`, tm: tmBuyLine(pk.code),
         plain: { title: `اشتر ${num(qty)} سهم من ${esc(nm(pk.code))}`, why: `هذا شراء ${ses.monthName} من سلّتك. ${esc(nm(pk.code))} ${plainKind(pk.code)}، ويوزع أرباح حوالي ${num(((x?.yl || 0) * 100).toFixed(1) + '%')} من سعره كل سنة.` } });
     });
   }
@@ -1131,6 +1308,7 @@ function stepCard(s, i) {
     ${s.kind === 'order' || s.kind === 'confirm' ? `<div class="step-order"><div><span>الكمية</span><b>${num(s.qty)}</b></div><div><span>${s.side === 'buy' ? 'أعلى سعر' : 'أقل سعر'}</span><b>${num(fmt(s.price))}</b></div><div><span>القيمة</span><b>${num(fmt(s.qty * s.price, 0))}</b></div></div>` : ''}
     <div class="whyline"><b>ليش:</b> ${s.why}</div>
     ${s.result ? `<div class="whyline">${s.result}</div>` : ''}
+    ${s.tm ? `<div class="whyline tm-line">${s.tm}</div>` : ''}
     ${s.kind === 'order' ? howTo(s) : ''}
     ${btns ? `<div class="actions">${btns}</div>` : ''}
     ${s.exit ? `<button class="linkbtn" data-act="keep-holding" data-code="${s.code}">ما أبي أبيعه، طلّعه من الخطة</button>` : ''}
@@ -1209,6 +1387,7 @@ function applyFill(stp, qty, price) {
     S.cash = +(S.cash + q * price - q * price * FEE).toFixed(2);
     rec.pnl = +((price - h.cost) * q - q * price * FEE).toFixed(2);
     if (stp.spec && P.spec) { const tr = P.spec.trades.find((x) => x.id === stp.spec); if (tr) Object.assign(tr, { status: 'closed', exit: price, closed: ses.date, pnl: +((price - tr.entry) * q - q * price * FEE - q * tr.entry * FEE).toFixed(2) }); }
+    if (stp.xp && h.xp) { if (stp.xp === 1) { h.xp.t1done = true; h.target = h.xp.t2; } else { h.xp.t2done = true; h.target = null; } }
     h.qty -= q; if (h.qty <= 0) S.holdings = S.holdings.filter((x) => x !== h);
     delete P.exits[stp.code];
   }
@@ -1428,6 +1607,7 @@ function shDetail(st) {
   ${owned ? (() => { const h = calc().H.find((x) => x.id === owned.id); return `<div class="kv">
       <div class="cell"><div class="k">تملك</div><div class="v">${num(owned.qty)} سهم بمتوسط ${fmt(owned.cost)}</div></div>
       <div class="cell"><div class="k">ربحك/خسارتك</div><div class="v ${dir(h.pnl)}-t">${sgn(h.pnl)} (${pct(h.pnlPct)})</div></div></div>`; })() : ''}
+  ${isIdx ? '' : exitCard(code) + timingCard(code)}
   ${isIdx ? '' : calcBox(q, owned)}
   ${isIdx ? '' : `<div class="two">
     ${owned ? `<button class="btn pri" data-act="edit-holding" data-id="${owned.id}">تعديل في أسهمي</button>` : `<button class="btn pri" data-act="add-holding" data-code="${esc(code)}">أضفه لأسهمي</button>`}
@@ -1577,6 +1757,18 @@ document.addEventListener('click', async (e) => {
     }
     case 'spec-off': if (S.plan.spec) { S.plan.spec.on = false; save(); closeSheet(); render(); toast('وقفت المضاربة'); } break;
     case 'step-fill': { const stp = planSteps(calc()).find((x) => x.id === t.dataset.id); if (stp) openSheet({ type: 'fill', step: stp }); break; }
+    case 'xp-apply': {
+      const h = S.holdings.find((x) => x.code === t.dataset.code); if (!h) break;
+      const d = t.dataset; h.stop = +d.stop; h.target = +d.t1;
+      h.xp = { at: session().date, stop: +d.stop, t1: +d.t1, t2: +d.t2, hi: Q(h.code)?.p || 0 };
+      save(); render(); toast('اعتمدت مخطط الخروج. بنبهك عند كل مستوى'); break;
+    }
+    case 'xp-done': {
+      const h = S.holdings.find((x) => x.code === t.dataset.code); if (!h?.xp) break;
+      if (t.dataset.k === '1') { h.xp.t1done = true; h.target = h.xp.t2; } else { h.xp.t2done = true; h.target = null; }
+      save(); render(); toast('تمام. عدّل الكمية في أسهمك لو ما عدلتها'); break;
+    }
+    case 'xp-off': { const h = S.holdings.find((x) => x.code === t.dataset.code); if (h?.xp) { delete h.xp; save(); render(); toast('ألغيت المخطط. وقفك وهدفك باقيين، تقدر تعدلهم'); } break; }
     case 'keep-holding': { const h = S.holdings.find((x) => x.code === t.dataset.code); if (h) { h.keep = true; delete S.plan.exits[h.code]; save(); render(); toast('طلّعته من الخطة، ما راح أطلب منك تبيعه'); } break; }
     case 'stop-plan': if (!st.confirmStop) { st.confirmStop = true; renderSheet(); break; } S.plan = planDefaults(); save(); closeSheet(); render(); toast('وقفت الخطة'); break;
     case 'sort': mktSort = t.dataset.k; render(); break;
@@ -1695,6 +1887,7 @@ async function boot() {
   try { TICK = await (await fetch('data/tickers.json')).json(); } catch { TICK = []; }
   try { NOTES = await (await fetch('data/notes.json?t=' + Date.now())).json(); } catch { NOTES = {}; }
   try { FUND = await (await fetch('data/fundamentals.json?t=' + Date.now())).json(); } catch { FUND = {}; }
+  await fetchSignals();
   await fetchMarket(false);
   syncPlan(); render();
   if (imp) openSheet({ type: 'import', data: imp });

@@ -408,3 +408,18 @@ body.simple .sh-h .code{font-family:var(--f-body)}
 
 .s-spec{border:1.5px dashed var(--warn)}
 .s-rules{margin:4px 0;padding-inline-start:20px;font-size:.92rem;line-height:1.8}
+
+/* آلة الزمن + مخطط الخروج */
+.tm{display:flex;flex-direction:column;gap:8px}
+.tm-t{width:100%;border-collapse:separate;border-spacing:0 3px;font-size:.8rem;text-align:center}
+.tm-t th,.tm-t td{padding:5px 4px}
+.tm-t thead th{font-weight:600;color:var(--muted);font-size:.7rem}
+.tm-t tbody th{text-align:start;font-weight:700;white-space:nowrap}
+.tm-t tbody th small{display:block;font-family:var(--f-num);font-weight:500;color:var(--muted);font-size:.68rem}
+.tm-t tbody td{font-family:var(--f-num);font-weight:600;border-radius:8px}
+.tm-t tr.up td{background:var(--gain-soft)}
+.tm-t tr.down td{background:var(--loss-soft)}
+.tm-t tr.up th .num{color:var(--gain)}
+.tm-t tr.down th .num{color:var(--loss)}
+.xp-grid b{font-size:.95rem}
+.tm-line{border-inline-start:3px solid var(--info);padding-inline-start:8px}

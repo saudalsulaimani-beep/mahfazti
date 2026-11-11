@@ -1,3 +1,4 @@
 node_modules/
 data/market.json
 data/fundamentals.json
+data/signals.json
