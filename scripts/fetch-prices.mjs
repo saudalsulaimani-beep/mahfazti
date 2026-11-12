@@ -7,6 +7,9 @@ const OUT = 'data/market.json';
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const r2 = (x) => (x == null || !isFinite(x) ? null : Math.round(x * 100) / 100);
+const gapCh = (n) => Math.min(35, Math.max(1, n)).toString(36);
+const dDiff = (a, b) => Math.round((Date.parse(b + 'T12:00:00Z') - Date.parse(a + 'T12:00:00Z')) / 864e5);
+const addD = (day, n) => new Date(Date.parse(day + 'T12:00:00Z') + n * 864e5).toISOString().slice(0, 10);
 const ryDay = (sec) => new Date((sec + 3 * 3600) * 1000).toISOString().slice(0, 10); // تاريخ الرياض
 
 let previous = { quotes: {} };
@@ -72,6 +75,8 @@ function parse(res) {
     divs,
     c: tail.map((r) => r2(r.c)),
     c0: ryDay(tail[0].t),
+    // فرق الأيام بين كل إغلاق واللي قبله (حرف لكل يوم) — التطبيق يطلع منه تاريخ كل نقطة في الرسم
+    g: tail.slice(1).map((r, i) => gapCh(dDiff(ryDay(tail[i].t), ryDay(r.t)))).join(''),
   };
 }
 
@@ -84,12 +89,15 @@ function mergeQuick(prev, res) {
   const last = rows[rows.length - 1], lastDay = ryDay(last.t);
   const todayBar = lastDay === ryDay(m.regularMarketTime);
   const pc = rows.length > 1 ? (todayBar ? rows[rows.length - 2].c : last.c) : prev.pc;
-  let c = prev.c.slice();
+  let c = prev.c.slice(), g = prev.g, c0 = prev.c0;
   if (lastDay === prev.cl) c[c.length - 1] = r2(last.c);
-  else if (lastDay > prev.cl) { c.push(r2(last.c)); if (c.length > 250) c = c.slice(-250); }
+  else if (lastDay > prev.cl) {
+    c.push(r2(last.c)); if (g != null) g += gapCh(dDiff(prev.cl, lastDay));
+    if (c.length > 250) { c = c.slice(-250); if (g) { c0 = addD(c0, parseInt(g[0], 36)); g = g.slice(1); } }
+  }
   return { ...prev, p: r2(m.regularMarketPrice), pc: r2(pc), dh: r2(m.regularMarketDayHigh), dl: r2(m.regularMarketDayLow),
     v: m.regularMarketVolume ?? prev.v, t: m.regularMarketTime,
-    h52: r2(m.fiftyTwoWeekHigh) ?? prev.h52, l52: r2(m.fiftyTwoWeekLow) ?? prev.l52, c, cl: lastDay > prev.cl ? lastDay : prev.cl, stale: undefined };
+    h52: r2(m.fiftyTwoWeekHigh) ?? prev.h52, l52: r2(m.fiftyTwoWeekLow) ?? prev.l52, c, g, c0, cl: lastDay > prev.cl ? lastDay : prev.cl, stale: undefined };
 }
 
 const quotes = {};

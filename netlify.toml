@@ -1,0 +1,9 @@
+# Netlify هنا محرك خلفي بس (التنبيهات، رسم اليوم، الأسعار الحية). الواجهة نفسها تبقى على GitHub Pages.
+[build]
+  publish = "netlify/public"
+  # كل نشر يكلّف رصيد من الخطة المجانية، فما ننشر إلا لو تغيّر كود المحرك نفسه
+  # (تحديثات الأسعار والتحليل اليومي ما تحتاج نشر هنا)
+  ignore = "git diff --quiet $CACHED_COMMIT_REF $COMMIT_REF -- netlify/ netlify.toml package.json"
+
+[functions]
+  node_bundler = "esbuild"

@@ -423,3 +423,38 @@ body.simple .sh-h .code{font-family:var(--f-body)}
 .tm-t tr.down th .num{color:var(--loss)}
 .xp-grid b{font-size:.95rem}
 .tm-line{border-inline-start:3px solid var(--info);padding-inline-start:8px}
+
+/* ── الرسم التفاعلي ── */
+.ranges{flex-wrap:wrap}
+.chart svg[data-ch]{touch-action:pan-y;cursor:crosshair;-webkit-user-select:none;user-select:none}
+.ch-tip{padding:2px 8px 8px;min-height:52px}
+.ch-tip .t-top{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.ch-tip .t-top b{font-family:var(--f-num);font-size:1.25rem}
+.ch-tip .t-top small{color:var(--muted);font-size:.72rem}
+.ch-tip .t-l{color:var(--fg);font-size:.86rem;font-weight:600;margin-top:2px}
+.ch-tip .t-h{color:var(--muted);font-size:.74rem;margin-top:2px}
+.ch-need{padding:18px 10px;text-align:center;line-height:1.9}
+.hours .htab{width:100%;border-collapse:collapse;font-size:.88rem}
+.htab th{color:var(--muted);font-weight:600;font-size:.74rem;text-align:start;padding:4px 6px;border-bottom:1px solid var(--line)}
+.htab td{padding:7px 6px;border-bottom:1px solid var(--line)}
+.htab tr:last-child td{border-bottom:0;font-weight:700}
+.htab td small{font-size:.7rem}
+
+/* ── التنبيهات ── */
+.al-entry{display:flex;justify-content:space-between;align-items:center;gap:8px;width:100%;text-align:inherit;border:1px solid var(--line);color:var(--fg);font:inherit}
+.al-entry .vchip{margin-inline-start:6px}
+.al-row{display:flex;gap:8px;align-items:center;justify-content:space-between;padding:10px 0;border-top:1px solid var(--line)}
+.al-row:first-of-type{border-top:0}
+.al-row.fired .al-main b{color:var(--gain)}
+.al-main{min-width:0;flex:1}
+.al-main b{display:block;font-size:.92rem}
+.al-btns{display:flex;gap:6px;flex:none}
+.al-btns .btn{padding:6px 10px}
+.al-fired{border:1.5px solid var(--gain)}
+.chips.wrap{flex-wrap:wrap;overflow:visible;margin:6px 0 10px}
+.chips.wrap .chip{font-size:.78rem}
+.seg{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}
+.seg .chip[aria-pressed="true"]{outline:2px solid var(--gold)}
+.steps-ol{padding-inline-start:20px;line-height:2;margin:8px 0 12px}
+select{font:inherit;width:100%;padding:9px 10px;border-radius:10px;border:1px solid var(--line);background:var(--surface);color:var(--fg);margin-top:4px}
+.btn[disabled]{opacity:.45}

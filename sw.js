@@ -1,5 +1,5 @@
 // عامل الخدمة: يخلي التطبيق يفتح بدون نت، ويجيب الأسعار من الشبكة أولاً
-const VERSION = 'mahfazti-v14';
+const VERSION = 'mahfazti-v15';
 const SHELL = ['./', 'index.html', 'app.css', 'app.js', 'manifest.webmanifest', 'data/tickers.json',
   'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png', 'icons/favicon-32.png'];
 
@@ -40,4 +40,23 @@ self.addEventListener('fetch', (e) => {
       return hit || net;
     }));
   }
+});
+
+// الإشعارات: تجي من المحرك (Netlify) لما يوصل سهم للسعر اللي حددته
+self.addEventListener('push', (e) => {
+  let d = {}; try { d = e.data ? e.data.json() : {}; } catch { d = { title: 'محفظتي 1', body: e.data?.text() || '' }; }
+  e.waitUntil(self.registration.showNotification(d.title || 'محفظتي 1', {
+    body: d.body || '', tag: d.tag || undefined, renotify: true, lang: 'ar', dir: 'rtl',
+    icon: 'icons/icon-192.png', badge: 'icons/favicon-32.png', data: { code: d.code || null },
+  }));
+});
+
+self.addEventListener('notificationclick', (e) => {
+  e.notification.close();
+  const code = e.notification.data?.code;
+  const url = new URL(code ? './#stock=' + code : './', self.registration.scope).href;
+  e.waitUntil(self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((list) => {
+    for (const c of list) { if ('focus' in c) { c.postMessage({ open: code }); return c.focus(); } }
+    return self.clients.openWindow(url);
+  }));
 });

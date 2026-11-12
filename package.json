@@ -1,0 +1,10 @@
+{
+  "name": "mahfazti-backend",
+  "private": true,
+  "type": "module",
+  "description": "محرك خلفي صغير لتطبيق محفظتي 1 على Netlify: رسم اليوم، الأسعار الحية، والتنبيهات",
+  "dependencies": {
+    "@netlify/blobs": "^11.1.9",
+    "web-push": "^4.0.0"
+  }
+}

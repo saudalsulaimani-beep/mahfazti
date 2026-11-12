@@ -33,7 +33,7 @@ let lastFetch = 0;
 let deferredInstall = null;
 
 function planDefaults() { return { approved: null, months: 4, buffer: 0.10, basket: [], basketAt: null, month: null, exits: {}, steps: {}, journal: [] }; }
-function blank() { return { cash: 0, holdings: [], watch: [], setAt: null, plan: planDefaults() }; }
+function blank() { return { cash: 0, holdings: [], watch: [], setAt: null, plan: planDefaults(), alerts: [], moveAlert: 5, api: '' }; }
 function load() {
   try { const s = JSON.parse(localStorage.getItem(KEY)); if (s && Array.isArray(s.holdings)) { const o = Object.assign(blank(), s); o.plan = Object.assign(planDefaults(), s.plan || {}); return o; } } catch {}
   return blank();
@@ -88,12 +88,12 @@ async function fetchLive() {
       const [p, pc, dh, dl, v, t] = a; if (!t || (q.t && t < q.t)) continue;
       const day = new Date((t + 3 * 3600) * 1000).toISOString().slice(0, 10);
       if (Array.isArray(q.c) && q.c.length && code !== 'TASI') {
-        if (q.cl && day > q.cl) { q.c = q.c.concat(+p.toFixed(2)).slice(-250); q.cl = day; } else q.c[q.c.length - 1] = +p.toFixed(2);
+        if (q.cl && day > q.cl) pushDay(q, day, +p.toFixed(2)); else q.c[q.c.length - 1] = +p.toFixed(2);
       }
       Object.assign(q, { p: +p.toFixed(2), pc: pc ?? q.pc, dh: dh ?? q.dh, dl: dl ?? q.dl, v: v ?? q.v, t, stale: false });
       if (t > maxT) maxT = t;
     }
-    M.marketTime = maxT; render();
+    M.marketTime = maxT; checkLocal(); render();
   } catch { /* نكمل على نسخة الموقع */ }
 }
 
@@ -161,37 +161,446 @@ function spark(c, w = 72, h = 28, color) {
   return `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" aria-hidden="true"><path d="${d}" fill="none" stroke="${col}" stroke-width="1.6" stroke-linejoin="round" vector-effect="non-scaling-stroke"/><circle cx="${last[0]}" cy="${last[1]}" r="2" fill="${col}"/></svg>`;
 }
 
-function bigChart(q, bars, levels = []) {
-  const all = q.c || []; const c = all.slice(-bars);
-  if (c.length < 2) return '<div class="explain">ما فيه بيانات كافية للرسم.</div>';
+/* ───────── التواريخ ───────── */
+const AR_D = '٠١٢٣٤٥٦٧٨٩';
+const arNum = (s) => String(s).replace(/\d/g, (d) => AR_D[d]);
+const gapCh = (n) => Math.min(35, Math.max(1, n)).toString(36);
+function addDays(day, n) { const d = new Date(day + 'T12:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); }
+function daysBetween(a, b) { return Math.round((new Date(b + 'T12:00:00Z') - new Date(a + 'T12:00:00Z')) / 864e5); }
+const riyDay = (sec) => new Date((sec + 3 * 3600) * 1000).toISOString().slice(0, 10);
+// تاريخ كل نقطة في سلسلة الإغلاقات: من ملف الأسعار (فروق الأيام)، ولو ما توفر نحسبها تقريباً من أيام التداول
+function datesOf(q) {
+  const c = q?.c || []; if (!c.length) return [];
+  const key = c.length + '|' + q.cl + '|' + (q.g || '').length + '|' + q.c0;
+  if (q._dk === key) return q._d;
+  let D = null;
+  if (q.g && q.c0 && q.g.length === c.length - 1) {
+    D = [q.c0]; for (const ch of q.g) D.push(addDays(D[D.length - 1], parseInt(ch, 36)));
+    if (q.cl && D[D.length - 1] !== q.cl) D = null;
+  }
+  if (!D) {
+    D = []; let d = q.cl || riyDay(Date.now() / 1000);
+    while (D.length < c.length) { const w = new Date(d + 'T12:00:00Z').getUTCDay(); if (w !== 5 && w !== 6) D.unshift(d); d = addDays(d, -1); }
+  }
+  q._d = D; q._dk = key; return D;
+}
+// يوم جديد ينضاف للسلسلة (من الأسعار الحية)
+function pushDay(q, day, p) {
+  if (q.g != null && q.cl) q.g += gapCh(daysBetween(q.cl, day));
+  q.c = q.c.concat(p); q.cl = day;
+  if (q.c.length > 250) { q.c = q.c.slice(-250); if (q.g) { q.c0 = addDays(q.c0, parseInt(q.g[0], 36)); q.g = q.g.slice(1); } }
+}
+function dayLabel(day) {
+  const d = new Date(day + 'T12:00:00Z'), y = d.getUTCFullYear(), now = new Date().getUTCFullYear();
+  return `${AR_DAYS[d.getUTCDay()]} ${arNum(d.getUTCDate())} ${AR_MONTHS[d.getUTCMonth()]}${y !== now ? ' ' + arNum(y) : ''}`;
+}
+function clock(sec) {
+  const d = new Date((sec + 3 * 3600) * 1000), h = d.getUTCHours(), m = d.getUTCMinutes();
+  return `${arNum((h % 12) || 12)}:${arNum(String(m).padStart(2, '0'))} ${h < 12 ? 'ص' : 'م'}`;
+}
+
+/* ───────── الرسم التفاعلي: اسحب إصبعك وتشوف السعر في كل نقطة ───────── */
+const CH = {}; let chN = 0;
+function drawChart({ vals, labels, ma = null, levels = [], startText = '', endText = '', cmp = 'prev', base = null }) {
+  const c = vals; if (!c || c.length < 2) return '<div class="explain">ما فيه بيانات كافية للرسم.</div>';
   const W = 600, H = 220, padT = 16, padB = 24, padR = 8;
-  const padL = Math.max(46, fmt(Math.max(...all)).length * 7 + 12);
-  const ma = all.map((_, i) => (i >= 49 ? all.slice(i - 49, i + 1).reduce((a, b) => a + b, 0) / 50 : null)).slice(-bars);
-  const vals = [...c, ...ma.filter((x) => x != null), ...levels.map((l) => l.v)];
-  let lo = Math.min(...vals), hi = Math.max(...vals); const pad = (hi - lo) * 0.08 || 1; lo -= pad; hi += pad;
+  const padL = Math.max(46, fmt(Math.max(...c)).length * 7 + 12);
+  const all = [...c, ...(ma || []).filter((x) => x != null), ...levels.map((l) => l.v), ...(base != null ? [base] : [])];
+  let lo = Math.min(...all), hi = Math.max(...all); const pad = (hi - lo) * 0.08 || 1; lo -= pad; hi += pad;
   // مثل تطبيقات الوسطاء: الأقدم يسار والأحدث يمين
-  const Xr = (i) => padL + (i / (c.length - 1)) * (W - padL - padR);
+  const X = (i) => padL + (i / (c.length - 1)) * (W - padL - padR);
   const Y = (v) => padT + (1 - (v - lo) / (hi - lo)) * (H - padT - padB);
-  const up = c[c.length - 1] >= c[0]; const col = up ? 'var(--gain)' : 'var(--loss)';
-  const line = c.map((v, i) => (i ? 'L' : 'M') + Xr(i).toFixed(1) + ' ' + Y(v).toFixed(1)).join('');
-  const area = line + `L${Xr(c.length - 1).toFixed(1)} ${H - padB}L${Xr(0).toFixed(1)} ${H - padB}Z`;
-  let maPath = ''; let started = false;
-  ma.forEach((v, i) => { if (v == null) return; maPath += (started ? 'L' : 'M') + Xr(i).toFixed(1) + ' ' + Y(v).toFixed(1); started = true; });
-  const ticks = [lo + (hi - lo) * 0.15, (lo + hi) / 2, hi - (hi - lo) * 0.15].filter((t) => levels.every((l) => Math.abs(Y(t) - Y(l.v)) > 14));
-  const gid = 'g' + uid();
-  const lv = levels.map((l) => `<line x1="${padL}" x2="${W - padR}" y1="${Y(l.v)}" y2="${Y(l.v)}" stroke="${l.col}" stroke-dasharray="4 4" stroke-width="1.2"/><text x="${padL - 4}" y="${Y(l.v) + 4}" text-anchor="end" style="fill:${l.col}">${fmt(l.v)}</text>`).join('');
-  const lx = Xr(c.length - 1), ly = Y(c[c.length - 1]);
-  return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="رسم السعر" direction="ltr">
+  const ref = base ?? c[0];
+  const up = c[c.length - 1] >= ref; const col = up ? 'var(--gain)' : 'var(--loss)';
+  const line = c.map((v, i) => (i ? 'L' : 'M') + X(i).toFixed(1) + ' ' + Y(v).toFixed(1)).join('');
+  const area = line + `L${X(c.length - 1).toFixed(1)} ${H - padB}L${X(0).toFixed(1)} ${H - padB}Z`;
+  let maPath = '', started = false;
+  (ma || []).forEach((v, i) => { if (v == null) return; maPath += (started ? 'L' : 'M') + X(i).toFixed(1) + ' ' + Y(v).toFixed(1); started = true; });
+  const lv = [...levels, ...(base != null ? [{ v: base, col: 'var(--faint)' }] : [])];
+  const ticks = [lo + (hi - lo) * 0.15, (lo + hi) / 2, hi - (hi - lo) * 0.15].filter((t) => lv.every((l) => Math.abs(Y(t) - Y(l.v)) > 14));
+  const id = 'ch' + (++chN); const gid = 'g' + id;
+  CH[id] = { vals: c, labels, X, Y, W, padL, padR, cmp, base };
+  const old = Object.keys(CH); if (old.length > 40) old.slice(0, old.length - 40).forEach((k) => delete CH[k]);
+  const lvSvg = lv.map((l) => `<line x1="${padL}" x2="${W - padR}" y1="${Y(l.v)}" y2="${Y(l.v)}" stroke="${l.col}" stroke-dasharray="4 4" stroke-width="1.2"/><text x="${padL - 4}" y="${Y(l.v) + 4}" text-anchor="end" style="fill:${l.col}">${fmt(l.v)}</text>`).join('');
+  const lx = X(c.length - 1), ly = Y(c[c.length - 1]);
+  return `<div class="ch-tip" id="tip-${id}">${tipHtml(id, c.length - 1, true)}</div>
+  <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="رسم السعر" direction="ltr" data-ch="${id}">
     <defs><linearGradient id="${gid}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${col}" stop-opacity=".22"/><stop offset="1" stop-color="${col}" stop-opacity="0"/></linearGradient></defs>
     ${ticks.map((t) => `<line x1="${padL}" x2="${W - padR}" y1="${Y(t)}" y2="${Y(t)}" stroke="var(--line)" stroke-width="1"/><text x="${padL - 6}" y="${Y(t) + 4}" text-anchor="end">${fmt(t)}</text>`).join('')}
     <path d="${area}" fill="url(#${gid})"/>
     ${maPath ? `<path d="${maPath}" fill="none" stroke="var(--gold)" stroke-width="1.4" stroke-dasharray="5 4"/>` : ''}
     <path d="${line}" fill="none" stroke="${col}" stroke-width="2" stroke-linejoin="round"/>
-    ${lv}
+    ${lvSvg}
     <circle cx="${lx}" cy="${ly}" r="4" fill="${col}" stroke="var(--surface)" stroke-width="2"/>
-    <text x="${padL}" y="${H - 6}" text-anchor="end" direction="rtl">قبل ${c.length} جلسة</text>
-    <text x="${W - padR}" y="${H - 6}" text-anchor="start" direction="rtl">اليوم</text>
+    <g class="xh" visibility="hidden"><line x1="0" x2="0" y1="${padT}" y2="${H - padB}" stroke="var(--fg)" stroke-width="1" stroke-dasharray="3 3" opacity=".6"/><circle r="5.5" fill="var(--surface)" stroke="var(--fg)" stroke-width="2.2"/></g>
+    <text x="${padL}" y="${H - 6}" text-anchor="end" direction="rtl">${startText}</text>
+    <text x="${W - padR}" y="${H - 6}" text-anchor="start" direction="rtl">${endText}</text>
+    <rect x="0" y="0" width="${W}" height="${H}" fill="transparent"/>
   </svg>`;
+}
+function tipHtml(id, i, idle) {
+  const C = CH[id]; if (!C) return ''; const v = C.vals[i];
+  const ref = C.cmp === 'base' ? C.base : i > 0 ? C.vals[i - 1] : null;
+  const what = C.cmp === 'base' ? 'عن إغلاق أمس' : C.cmp === 'hour' ? 'عن الساعة اللي قبلها' : 'عن اليوم اللي قبله';
+  const ch = ref ? (v - ref) / ref * 100 : null;
+  return `<div class="t-top"><b>${num(fmt(v))}</b>${ch != null ? `<span class="chg ${dir(ch)}">${pct(ch, 2)}</span><small>${what}</small>` : ''}</div>
+    <div class="t-l">${idle ? 'آخر سعر: ' : ''}<bdi>${esc(C.labels?.[i] || '')}</bdi></div>
+    ${idle ? '<div class="t-h">👆 حط إصبعك على الرسم واسحب، يطلع لك سعر كل نقطة</div>' : ''}`;
+}
+function chMove(svg, clientX) {
+  const id = svg.dataset.ch, C = CH[id]; if (!C) return;
+  const r = svg.getBoundingClientRect(); const vx = (clientX - r.left) / r.width * C.W;
+  const n = C.vals.length; let i = Math.round((vx - C.padL) / (C.W - C.padL - C.padR) * (n - 1));
+  i = Math.max(0, Math.min(n - 1, i)); if (svg._i === i) return; svg._i = i;
+  const g = svg.querySelector('.xh'), x = C.X(i), y = C.Y(C.vals[i]);
+  g.setAttribute('visibility', 'visible');
+  const ln = g.querySelector('line'); ln.setAttribute('x1', x); ln.setAttribute('x2', x);
+  const dt = g.querySelector('circle'); dt.setAttribute('cx', x); dt.setAttribute('cy', y);
+  const tip = document.getElementById('tip-' + id); if (tip) tip.innerHTML = tipHtml(id, i, false);
+}
+document.addEventListener('pointerdown', (e) => { const s = e.target.closest?.('svg[data-ch]'); if (s) chMove(s, e.clientX); });
+document.addEventListener('pointermove', (e) => { const s = e.target.closest?.('svg[data-ch]'); if (s && (e.pointerType === 'mouse' || e.buttons)) chMove(s, e.clientX); });
+
+function bigChart(q, bars, levels = []) {
+  const all = q.c || []; const c = all.slice(-bars);
+  const D = datesOf(q).slice(-bars);
+  const ma = all.map((_, i) => (i >= 49 ? all.slice(i - 49, i + 1).reduce((a, b) => a + b, 0) / 50 : null)).slice(-bars);
+  return drawChart({ vals: c, labels: D.map(dayLabel), ma, levels, startText: D[0] ? dayLabel(D[0]) : `قبل ${c.length} جلسة`, endText: 'اليوم', cmp: 'prev' });
+}
+
+/* رسم اليوم (كل ٥ دقائق) وآخر ٥ أيام (كل ساعة) — يجي من المحرك (Netlify) */
+const INTRA = {};
+async function loadIntra(code, r) {
+  const k = code + '|' + r; if (INTRA[k]?.loading) return;
+  INTRA[k] = { ...(INTRA[k] || {}), loading: true };
+  try {
+    const res = await fetch(`${apiBase()}/api/chart?code=${encodeURIComponent(code)}&r=${r}`, { cache: 'no-store' });
+    if (!res.ok) throw 0; const d = await res.json(); if (!d.t) throw 0;
+    INTRA[k] = { ...d, at: Date.now() };
+  } catch { INTRA[k] = { err: true, at: Date.now() }; }
+  if (sheetState?.code === code && (sheetState.rng === r)) renderSheet();
+}
+const RNG = [['1d', 'اليوم'], ['5d', '٥ أيام'], [22, 'شهر'], [65, '٣ أشهر'], [130, '٦ أشهر'], [250, 'سنة']];
+function chartBlock(code, st, levels = []) {
+  const q = Q(code); const r = st.rng ?? st.bars ?? 130;
+  let body = '', extra = '';
+  if (r === '1d' || r === '5d') {
+    const I = INTRA[code + '|' + r];
+    if (!apiBase()) body = `<div class="explain ch-need">⏱️ رسم اليوم بالدقيقة وسعر كل ساعة يحتاجون «المحرك» (Netlify).<br>اربطه مرة وحدة من ⚙️ الإعدادات ← «التنبيهات والمحرك».</div>`;
+    else {
+      if (!I || (!I.loading && (I.err ? Date.now() - I.at > 15e3 : marketOpen() && Date.now() - I.at > 60e3))) loadIntra(code, r);
+      if (!I?.t?.length) body = I?.err ? '<div class="explain">ما قدرت أجيب أسعار اليوم الحين. جرّب بعد شوي.</div>' : '<div class="loading"><span class="spin"></span> أجيب أسعار اليوم…</div>';
+      else {
+        const one = r === '1d';
+        // خطوط بعيدة (مثل متوسط شرايك) تضغط رسم اليوم، فنخلي القريبة بس
+        const lo = Math.min(...I.c), hi = Math.max(...I.c);
+        levels = levels.filter((l) => l.v >= lo * 0.97 && l.v <= hi * 1.03);
+        body = drawChart({ vals: I.c, labels: I.t.map((s) => (one ? clock(s) : `${AR_DAYS[new Date((s + 3 * 3600) * 1000).getUTCDay()]} ${clock(s)}`)),
+          levels, base: one ? I.pc : null, cmp: one ? 'base' : 'hour',
+          startText: one ? dayLabel(riyDay(I.t[0])) : 'قبل ٥ جلسات', endText: 'آخر سعر' });
+        if (one) extra = hourTable(I);
+      }
+    }
+  } else body = q?.c ? bigChart(q, r, levels) : '<div class="explain">ما فيه بيانات كافية للرسم.</div>';
+  return `<div class="chart">${body}
+    <div class="ranges">${RNG.map(([n, l]) => `<button class="chip" data-act="rng" data-n="${n}" aria-pressed="${String(r) === String(n)}">${l}</button>`).join('')}</div></div>${extra}`;
+}
+// سعره عند كل ساعة في جلسة اليوم
+function hourTable(I) {
+  const t = I.t, c = I.c; if (!t?.length) return '';
+  const mins = (s) => { const d = new Date((s + 3 * 3600) * 1000); return d.getUTCHours() * 60 + d.getUTCMinutes(); };
+  const day = riyDay(t[t.length - 1]), lastMin = mins(t[t.length - 1]) + 5;
+  const rows = [[`الافتتاح ${clock(t[0])}`, c[0]]];
+  for (let h = 11; h <= 15; h++) {
+    if (lastMin < h * 60) break;
+    let idx = -1; for (let i = 0; i < t.length; i++) if (mins(t[i]) + 5 <= h * 60) idx = i;
+    if (idx >= 0) rows.push([`الساعة ${arNum((h % 12) || 12)}:٠٠ ${h < 12 ? 'ص' : 'م'}`, c[idx]]);
+  }
+  const live = marketOpen() && day === riyDay(Date.now() / 1000);
+  rows.push([live ? `آخر سعر (${clock(t[t.length - 1])})` : 'الإغلاق', I.p ?? c[c.length - 1]]);
+  const pc = I.pc;
+  return `<section class="card hours"><div class="sec-h"><h2>⏱️ سعره كل ساعة</h2><span class="meta">${dayLabel(day)}</span></div>
+    <table class="htab"><thead><tr><th>الوقت</th><th>السعر</th><th>عن إغلاق أمس${pc ? ` (${num(fmt(pc))})` : ''}</th></tr></thead><tbody>
+    ${rows.map(([k, v], i) => { const prev = i ? rows[i - 1][1] : null; const ch = pc ? (v - pc) / pc * 100 : null;
+      return `<tr><td>${k}</td><td>${num(fmt(v))}${prev != null && Math.abs(v - prev) >= 0.005 ? ` <small class="${dir(v - prev)}-t">${v > prev ? '▲' : '▼'}</small>` : ''}</td><td class="${dir(ch)}-t">${pct(ch, 2)}</td></tr>`; }).join('')}
+    </tbody></table>
+    <div class="whyline">▲▼ يعني طلع أو نزل عن الساعة اللي قبلها.</div></section>`;
+}
+
+/* ───────── المحرك (Netlify): التنبيهات والأسعار الحية ───────── */
+const DEFAULT_API = '';
+function apiBase() { return (S.api || DEFAULT_API || '').trim().replace(/\/+$/, ''); }
+function devId() {
+  let id = null; try { id = localStorage.getItem('mahfazti.dev'); } catch {}
+  if (!id) { const a = new Uint8Array(18); crypto.getRandomValues(a); id = btoa(String.fromCharCode(...a)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''); try { localStorage.setItem('mahfazti.dev', id); } catch {} }
+  return id;
+}
+const pushOn = () => { try { return localStorage.getItem('mahfazti.push') === '1'; } catch { return false; } };
+const ACTS = { buy: ['🟢', 'أبي أشتري'], sell: ['🔴', 'أبي أبيع'], note: ['🔔', 'بس نبّهني'] };
+let apiOk = null;
+async function pingApi() {
+  if (!apiBase()) { apiOk = null; return; }
+  try { const r = await fetch(apiBase() + '/api/ping', { cache: 'no-store' }); apiOk = r.ok; } catch { apiOk = false; }
+}
+async function currentSub() {
+  try { if (!pushOn() || !('serviceWorker' in navigator)) return undefined; const reg = await navigator.serviceWorker.ready; const s = await reg.pushManager.getSubscription(); return s ? s.toJSON() : undefined; } catch { return undefined; }
+}
+let syncT = null;
+function syncSoon() { clearTimeout(syncT); syncT = setTimeout(() => syncAlerts(), 600); }
+async function syncAlerts(opt = {}) {
+  if (!apiBase()) return null;
+  const names = {}; for (const a of S.alerts || []) names[a.code] = Q(a.code)?.n || a.code;
+  const body = { id: devId(), alerts: S.alerts || [], move: S.moveAlert ?? 5, names,
+    hold: S.holdings.map((h) => ({ code: h.code, n: Q(h.code)?.n || h.name || h.code })),
+    sub: opt.sub !== undefined ? opt.sub : await currentSub(), test: !!opt.test };
+  try {
+    const r = await fetch(apiBase() + '/api/sync', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    if (!r.ok) throw 0; const d = await r.json(); apiOk = true; mergeFired(d.alerts); return d;
+  } catch { apiOk = false; return null; }
+}
+async function pullAlerts() {
+  if (!apiBase() || !(S.alerts || []).length) return;
+  try { const d = await (await fetch(`${apiBase()}/api/sync?id=${devId()}`, { cache: 'no-store' })).json(); mergeFired(d.alerts); } catch {}
+}
+function mergeFired(list) {
+  let ch = false;
+  for (const s of list || []) {
+    const a = (S.alerts || []).find((x) => x.id === s.id);
+    if (a && s.firedAt && !a.firedAt && a.rev === s.rev) { a.firedAt = s.firedAt; a.firedP = s.firedP; ch = true; }
+  }
+  if (ch) { save(); render(); if (sheetState) renderSheet(); }
+}
+// والتطبيق مفتوح: نفحص التنبيهات بأنفسنا كمان (حتى بدون المحرك)
+function checkLocal() {
+  let ch = false;
+  for (const a of S.alerts || []) {
+    if (!a.on || a.firedAt) continue; const q = Q(a.code); if (!q?.p || q.stale) continue;
+    if (q.t && riyDay(q.t) !== riyDay(Date.now() / 1000)) continue;
+    if (a.op === '>=' ? q.p >= a.price : q.p <= a.price) { a.firedAt = new Date().toISOString(); a.firedP = q.p; ch = true; toast(`${ACTS[a.act][0]} ${Q(a.code)?.n || a.code} وصل ${fmt(q.p)}`); }
+  }
+  if (ch) { save(); syncSoon(); }
+}
+function b64u(s) { const p = '='.repeat((4 - (s.length % 4)) % 4); const b = atob((s + p).replace(/-/g, '+').replace(/_/g, '/')); return Uint8Array.from(b, (c) => c.charCodeAt(0)); }
+async function enablePush() {
+  if (!apiBase()) { toast('اربط المحرك أول (الخطوة ١)'); return; }
+  const standalone = window.matchMedia('(display-mode: standalone)').matches || navigator.standalone;
+  if (!('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window)) {
+    toast(/iphone|ipad/i.test(navigator.userAgent) && !standalone ? 'افتح التطبيق من أيقونته في الشاشة الرئيسية وجرب' : 'هذا المتصفح ما يدعم الإشعارات'); return;
+  }
+  const perm = await Notification.requestPermission();
+  if (perm !== 'granted') { toast('ما انسمح بالإشعارات. فعّلها من الإعدادات ← الإشعارات ← محفظتي 1'); return; }
+  try {
+    const { key } = await (await fetch(apiBase() + '/api/sync?vapid=1')).json();
+    const reg = await navigator.serviceWorker.ready;
+    let sub = await reg.pushManager.getSubscription();
+    const opts = { userVisibleOnly: true, applicationServerKey: b64u(key) };
+    if (sub) { try { await sub.unsubscribe(); } catch {} }
+    sub = await reg.pushManager.subscribe(opts);
+    try { localStorage.setItem('mahfazti.push', '1'); } catch {}
+    const d = await syncAlerts({ sub: sub.toJSON(), test: true });
+    toast(d?.test === 'ok' ? 'تم! بيجيك إشعار تجربة الحين' : 'فعّلتها، بس ما قدرت أرسل التجربة');
+  } catch (e) { toast('ما قدرت أفعّل الإشعارات: ' + (e?.message || '').slice(0, 40)); }
+  if (sheetState) renderSheet();
+}
+async function disablePush() {
+  try { const reg = await navigator.serviceWorker.ready; const s = await reg.pushManager.getSubscription(); if (s) await s.unsubscribe(); } catch {}
+  try { localStorage.removeItem('mahfazti.push'); } catch {}
+  await syncAlerts({ sub: null }); toast('وقفت الإشعارات'); if (sheetState) renderSheet();
+}
+// أسعار حية أسرع من المحرك لأسهمك ومراقبتك (كل ٣٠ ثانية وقت السوق)
+async function fetchApiQuotes() {
+  if (!apiBase() || !M) return false;
+  const codes = new Set(['TASI', ...S.holdings.map((h) => h.code), ...S.watch.map((w) => w.code), ...(S.plan?.basket || []), ...(S.alerts || []).filter((a) => a.on && !a.firedAt).map((a) => a.code)]);
+  if (sheetState?.code) codes.add(sheetState.code);
+  try {
+    const r = await fetch(`${apiBase()}/api/quotes?codes=${[...codes].filter((c) => M.quotes[c]).join(',')}`, { cache: 'no-store' });
+    if (!r.ok) return false; const L = await r.json(); let maxT = M.marketTime || 0, n = 0;
+    for (const [code, x] of Object.entries(L.q || {})) {
+      const q = M.quotes[code]; if (!q || !x?.p || !x.t || (q.t && x.t < q.t)) continue;
+      const day = riyDay(x.t);
+      if (Array.isArray(q.c) && q.c.length && code !== 'TASI') { if (q.cl && day > q.cl) pushDay(q, day, +x.p.toFixed(2)); else q.c[q.c.length - 1] = +x.p.toFixed(2); }
+      Object.assign(q, { p: +x.p.toFixed(2), pc: x.pc ?? q.pc, dh: x.dh ?? q.dh, dl: x.dl ?? q.dl, v: x.v ?? q.v, t: x.t, stale: false });
+      if (x.t > maxT) maxT = x.t; n++;
+    }
+    M.marketTime = maxT; if (n) { checkLocal(); render(); if (sheetState && ['shold', 'detail'].includes(sheetState.type) && !document.querySelector('#sheet input:focus')) renderSheet(); }
+    return n > 0;
+  } catch { return false; }
+}
+
+/* شاشة تنبيهات سهم واحد */
+function alertSuggest(code) {
+  const q = Q(code), h = S.holdings.find((x) => x.code === code), w = S.watch.find((x) => x.code === code), E = S.plan?.exits?.[code], L = levels(q);
+  const out = [];
+  if (h) out.push(['متوسط شرايك', h.cost, 'note']);
+  if (h?.stop) out.push(['وقف خسارتك', h.stop, 'sell']);
+  if (h?.target) out.push(['هدفك', h.target, 'sell']);
+  if (E) { out.push(['سعر البيع في الخطة', E.sellAt, 'sell']); out.push(['حد الحماية', E.floor, 'sell']); }
+  if (w?.buyBelow) out.push(['سعر الشراء اللي حددته', w.buyBelow, 'buy']);
+  if (!h && L?.entry) out.push(['سعر شراء مقترح', L.entry, 'buy']);
+  if (q?.p) { out.push(['لو طلع ٥٪', rnd(q.p * 1.05, true), h ? 'sell' : 'note']); out.push(['لو نزل ٥٪', rnd(q.p * 0.95), h ? 'note' : 'buy']); }
+  const seen = new Set(); return out.filter(([, v]) => v > 0 && !seen.has(v.toFixed(2)) && seen.add(v.toFixed(2)));
+}
+function alertLine(a, withName) {
+  const p = Q(a.code)?.p; const dist = p ? (a.price - p) / p * 100 : null;
+  return `<div class="al-row ${a.firedAt ? 'fired' : ''}">
+    <div class="al-main"><b>${ACTS[a.act][0]} ${withName ? esc(Q(a.code)?.n || a.code) + ' · ' : ''}${a.op === '>=' ? 'لو طلع لـ' : 'لو نزل لـ'} ${num(fmt(a.price))}</b>
+      <div class="s-sub">${a.firedAt ? `✅ وصل ${num(fmt(a.firedP))} · ${dayLabel(a.firedAt.slice(0, 10))}` : !a.on ? '⏸ موقف' : dist != null ? `⏳ ينتظر · باقي ${num(Math.abs(dist).toFixed(1) + '%')} ${dist > 0 ? 'صعود' : 'نزول'}` : '⏳ ينتظر'}${a.note ? ' · ' + esc(a.note) : ''} · ${ACTS[a.act][1]}</div></div>
+    <div class="al-btns">${a.firedAt ? `<button class="btn" data-act="al-rearm" data-id="${a.id}">شغّله ثاني</button>` : ''}<button class="btn ghost" data-act="al-del" data-id="${a.id}" aria-label="حذف">🗑</button></div>
+  </div>`;
+}
+function pushBox() {
+  if (!apiBase()) return `<div class="s-warn">⚠️ التنبيهات تشتغل الحين بس والتطبيق مفتوح. عشان توصلك وهو مقفول، اربط المحرك من <button class="linkbtn" data-act="alerts">التنبيهات والمحرك ←</button></div>`;
+  if (!pushOn()) return `<div class="s-warn">🔕 الإشعارات مو مفعّلة على هذا الجوال.<button class="btn pri block" data-act="push-on" style="margin-top:8px">فعّل الإشعارات</button></div>`;
+  return '';
+}
+function shAlert(st) {
+  const code = st.code, q = Q(code), mine = (S.alerts || []).filter((a) => a.code === code);
+  const pr = N(st.price), op = pr != null && q?.p ? (pr >= q.p ? '>=' : '<=') : null;
+  return `<div class="sh-h"><div><h2>🔔 نبّهني على ${esc(q?.n || code)}</h2><div class="code">${code}</div></div>
+      <div style="text-align:left"><div class="p">${fmt(q?.p)}</div><div class="s-sub">السعر الحين</div></div></div>
+    ${pushBox()}
+    <form class="form" id="alertForm" autocomplete="off">
+      <label class="field">نبّهني لما يوصل السعر لـ<input id="al-price" class="n" inputmode="decimal" placeholder="مثلاً ${q?.p ? fmt(rnd(q.p * 1.05, true)) : ''}" value="${st.price ?? ''}"></label>
+      <div class="whyline" id="al-hint">${op ? `${op === '>=' ? '⬆️ يعني لو طلع لـ' : '⬇️ يعني لو نزل لـ'} ${num(fmt(pr))} أو ${op === '>=' ? 'فوق' : 'تحت'} (${pct((pr - q.p) / q.p * 100)} عن الحين)` : 'اكتب السعر، وأنا أعرف لحالي إذا تقصد طلوع أو نزول.'}</div>
+      <div class="chips wrap">${alertSuggest(code).map(([l, v, act]) => `<button type="button" class="chip" data-act="al-fill" data-v="${v}" data-a="${act}">${l} <bdi class="num">${fmt(v)}</bdi></button>`).join('')}</div>
+      <div class="field">ليش تبي التنبيه؟<div class="seg">${Object.entries(ACTS).map(([k, [ic, l]]) => `<button type="button" class="chip" data-act="al-act" data-a="${k}" aria-pressed="${(st.act || 'note') === k}">${ic} ${l}</button>`).join('')}</div></div>
+      <label class="field">ملاحظة لنفسك <small>اختياري</small><input id="al-note" maxlength="100" value="${esc(st.note || '')}" placeholder="مثلاً: أبيع نصها"></label>
+      <button class="btn pri block" type="submit">حفظ التنبيه</button>
+    </form>
+    ${mine.length ? `<div class="sec-h"><h2>تنبيهاتك على هذا السهم</h2></div>${mine.map((a) => alertLine(a, false)).join('')}` : ''}
+    <button class="btn ghost block" data-act="close">إغلاق</button>`;
+}
+/* شاشة كل التنبيهات + ربط المحرك + الودجيت */
+function shAlerts(st) {
+  const A = S.alerts || [], wait = A.filter((a) => !a.firedAt), done = A.filter((a) => a.firedAt);
+  const ios = /iphone|ipad/i.test(navigator.userAgent);
+  return `<div class="sh-h"><h2>🔔 التنبيهات والمحرك</h2><button class="btn ghost" data-act="close">إغلاق</button></div>
+    <section class="s-card"><b>١. المحرك (Netlify) ${apiBase() ? (apiOk === false ? '<span class="vchip loss">ما يرد</span>' : '<span class="vchip gain">مربوط ✓</span>') : '<span class="vchip warn">مو مربوط</span>'}</b>
+      <div class="s-sub">هو اللي يراقب الأسعار كل دقيقة وأنت جوالك مقفول، ويرسل لك الإشعار. ويعطيك رسم اليوم وسعر كل ساعة.</div>
+      <form class="form" id="apiForm" autocomplete="off"><label class="field">رابط المحرك<input id="f-api" dir="ltr" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="https://xxxx.netlify.app" value="${esc(S.api || '')}"></label>
+      <button class="btn block" type="submit">${apiBase() ? 'حفظ وفحص' : 'ربط'}</button></form></section>
+    <section class="s-card"><b>٢. الإشعارات على جوالك ${pushOn() ? '<span class="vchip gain">مفعّلة ✓</span>' : '<span class="vchip warn">مقفلة</span>'}</b>
+      ${pushOn() ? `<div class="two"><button class="btn" data-act="push-test">أرسل تجربة</button><button class="btn ghost" data-act="push-off">أوقفها</button></div>`
+        : `<div class="s-sub">${ios ? 'لازم تكون فاتح التطبيق من أيقونته في الشاشة الرئيسية (مو من Safari).' : ''}</div><button class="btn pri block" data-act="push-on" ${apiBase() ? '' : 'disabled'}>فعّل الإشعارات</button>`}
+      <label class="field" style="margin-top:10px">نبّهني لو سهم من أسهمي تحرك باليوم أكثر من
+        <select id="f-move">${[[0, 'لا تنبهني'], [3, '٣٪'], [5, '٥٪'], [7, '٧٪'], [10, '١٠٪']].map(([v, l]) => `<option value="${v}" ${(S.moveAlert ?? 5) === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label></section>
+    <section class="s-card"><b>٣. تنبيهات الأسعار (${num(A.length)})</b>
+      <div class="s-sub">تضيف تنبيه من صفحة أي سهم: اضغط السهم ← «🔔 نبّهني».</div>
+      ${wait.length ? wait.map((a) => alertLine(a, true)).join('') : '<div class="s-sub">ما عندك تنبيهات تنتظر.</div>'}
+      ${done.length ? `<div class="sec-h"><h2>وصلت ✅</h2></div>${done.map((a) => alertLine(a, true)).join('')}` : ''}
+      <div class="two"><button class="btn" data-act="al-pick">+ تنبيه لسهم</button></div></section>
+    <section class="s-card"><b>📱 ودجيت للشاشة الرئيسية</b>
+      <div class="s-sub">يوريك قيمة محفظتك وحركة أسهمك اليوم بدون ما تفتح التطبيق.</div>
+      <button class="btn block" data-act="widget">طريقة إضافته</button></section>`;
+}
+function shPickAlert(st) {
+  const res = TICK.filter((t) => !st.q || t.name.includes(st.q) || t.code.startsWith(st.q)).slice(0, 40);
+  const mine = [...new Set([...S.holdings.map((h) => h.code), ...S.watch.map((w) => w.code)])];
+  return `<div class="sh-h"><h2>تنبيه لأي سهم؟</h2><button class="btn ghost" data-act="close">إغلاق</button></div>
+    ${!st.q && mine.length ? `<div class="s-sub">أسهمك ومراقبتك:</div><div class="picker">${mine.map((c) => `<button type="button" data-act="alert" data-code="${c}"><span>${esc(Q(c)?.n || c)}</span><span class="code">${c}</span></button>`).join('')}</div>` : ''}
+    <label class="field">أو دوّر<input id="pickQ" type="search" placeholder="اسم الشركة أو الرمز" value="${esc(st.q || '')}"></label>
+    <div class="picker">${res.map((t) => `<button type="button" data-act="alert" data-code="${t.code}"><span>${esc(t.name)}</span><span class="code">${t.code}</span></button>`).join('')}</div>`;
+}
+function firedCard() {
+  const F = (S.alerts || []).filter((a) => a.firedAt && !a.seen);
+  if (!F.length) return '';
+  return `<section class="s-card al-fired"><b>🔔 تنبيهاتك اللي وصلت</b>
+    ${F.map((a) => `<div class="al-row fired"><div class="al-main" data-act="shold" data-code="${a.code}" role="button"><b>${ACTS[a.act][0]} ${esc(Q(a.code)?.n || a.code)} وصل ${num(fmt(a.firedP))}</b>
+      <div class="s-sub">${a.op === '>=' ? 'طلع فوق' : 'نزل تحت'} ${num(fmt(a.price))} اللي حددته · ${ACTS[a.act][1]}${a.note ? ' · ' + esc(a.note) : ''}</div></div>
+      <div class="al-btns"><button class="btn" data-act="al-seen" data-id="${a.id}">شفته</button></div></div>`).join('')}
+  </section>`;
+}
+function alertsEntry() {
+  const n = (S.alerts || []).filter((a) => a.on && !a.firedAt).length;
+  return `<button class="s-card al-entry" data-act="alerts"><span>🔔 تنبيهاتك ${n ? `<span class="vchip gain">${num(n)} تنتظر</span>` : ''}</span><span class="s-sub">${apiBase() && pushOn() ? 'توصلك على جوالك' : 'اضغط وفعّلها'} ←</span></button>`;
+}
+
+/* ───────── الودجيت (تطبيق Scriptable المجاني) ───────── */
+function widgetScript() {
+  const H = S.holdings.filter((h) => Q(h.code)).map((h) => ({ code: h.code, name: Q(h.code)?.n || h.code, qty: h.qty, cost: h.cost }));
+  return `// محفظتي 1 — ودجيت للشاشة الرئيسية (Scriptable)
+// انسخه من جديد من التطبيق كل ما تغيّرت أسهمك أو سيولتك. آخر نسخ: ${new Date().toISOString().slice(0, 10)}
+const APP = ${JSON.stringify(location.origin + location.pathname)};
+const CASH = ${+(S.cash || 0)};
+const HOLD = ${JSON.stringify(H)};
+const C = { bg1: "#0A1714", bg2: "#14302A", fg: "#E6EFEB", mute: "#93A9A1", gain: "#55CF89", loss: "#F27C70", gold: "#E2B95E" };
+const fm = FileManager.local(), cacheF = fm.joinPath(fm.documentsDirectory(), "mahfazti-widget.json");
+async function quote(code) {
+  const sym = code === "TASI" ? "%5ETASI.SR" : code + ".SR";
+  for (const h of ["query1", "query2"]) {
+    try {
+      const r = new Request("https://" + h + ".finance.yahoo.com/v8/finance/chart/" + sym + "?range=1d&interval=5m");
+      r.headers = { "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)" }; r.timeoutInterval = 12;
+      const m = (await r.loadJSON()).chart.result[0].meta;
+      if (m.regularMarketPrice != null) return { p: m.regularMarketPrice, pc: m.chartPreviousClose ?? m.previousClose, t: m.regularMarketTime };
+    } catch (e) {}
+  }
+  return null;
+}
+let cache = {}; try { if (fm.fileExists(cacheF)) cache = JSON.parse(fm.readString(cacheF)); } catch (e) {}
+const Q = {};
+await Promise.all([...HOLD.map((h) => h.code), "TASI"].map(async (c) => { Q[c] = (await quote(c)) || cache[c] || null; }));
+try { fm.writeString(cacheF, JSON.stringify(Q)); } catch (e) {}
+let total = CASH, day = 0, pnl = 0, lastT = 0;
+const rows = HOLD.map((h) => {
+  const q = Q[h.code]; const p = q?.p ?? h.cost;
+  total += h.qty * p; pnl += h.qty * (p - h.cost);
+  if (q?.pc) day += h.qty * (p - q.pc); if (q?.t > lastT) lastT = q.t;
+  return { ...h, p, ch: q?.pc ? (p - q.pc) / q.pc * 100 : 0 };
+});
+const base = total - day; const dayPct = base ? day / base * 100 : 0;
+const n2 = (x) => x.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const n0 = (x) => x.toLocaleString("en-US", { maximumFractionDigits: 0 });
+const sg = (x) => (x > 0 ? "+" : x < 0 ? "−" : "") ;
+const colr = (x) => new Color(x > 0.004 ? C.gain : x < -0.004 ? C.loss : C.mute);
+const now = new Date(Date.now() + 3 * 3600e3), dow = now.getUTCDay(), hm = now.getUTCHours() * 60 + now.getUTCMinutes();
+const open = dow <= 4 && hm >= 600 && hm < 910;
+const fam = config.widgetFamily || "medium";
+const w = new ListWidget(); w.url = APP; w.setPadding(14, 14, 12, 14);
+const g = new LinearGradient(); g.colors = [new Color(C.bg1), new Color(C.bg2)]; g.locations = [0, 1]; w.backgroundGradient = g;
+function txt(stack, s, size, color, bold) { const t = stack.addText(s); t.font = bold ? Font.boldSystemFont(size) : Font.mediumSystemFont(size); t.textColor = new Color(color || C.fg); t.lineLimit = 1; t.minimumScaleFactor = 0.6; return t; }
+const top = w.addStack(); top.centerAlignContent();
+txt(top, open ? "● السوق مفتوح" : "○ السوق مغلق", 10, open ? C.gain : C.mute); top.addSpacer(); txt(top, "محفظتي 1", 12, C.gold, true);
+w.addSpacer(6);
+const tv = w.addStack(); tv.addSpacer(); txt(tv, n2(total) + " ريال", fam === "small" ? 20 : 24, C.fg, true);
+const dv = w.addStack(); dv.addSpacer(); const dt = txt(dv, "اليوم " + sg(day) + n0(Math.abs(day)) + " (" + sg(day) + Math.abs(dayPct).toFixed(2) + "٪)", 12, null, true); dt.textColor = colr(day);
+if (fam !== "small") {
+  const pv = w.addStack(); pv.addSpacer(); const pt = txt(pv, "ربحك/خسارتك الكلية " + sg(pnl) + n0(Math.abs(pnl)) + " ريال", 11); pt.textColor = colr(pnl);
+  w.addSpacer(8);
+  const max = fam === "large" ? 8 : 3;
+  for (const r of rows.slice(0, max)) {
+    const s = w.addStack(); s.centerAlignContent();
+    const c = txt(s, sg(r.ch) + Math.abs(r.ch).toFixed(2) + "٪", 12, null, true); c.textColor = colr(r.ch);
+    s.addSpacer(); txt(s, n2(r.p), 12, C.fg, true); s.addSpacer(8); txt(s, r.name, 12, C.mute);
+    w.addSpacer(3);
+  }
+  if (fam === "large" && Q.TASI) {
+    w.addSpacer(6); const s = w.addStack(); const tc = Q.TASI.pc ? (Q.TASI.p - Q.TASI.pc) / Q.TASI.pc * 100 : 0;
+    const c = txt(s, sg(tc) + Math.abs(tc).toFixed(2) + "٪", 12, null, true); c.textColor = colr(tc); s.addSpacer(); txt(s, n0(Q.TASI.p), 12, C.fg, true); s.addSpacer(8); txt(s, "تاسي", 12, C.mute);
+  }
+}
+w.addSpacer();
+const ft = w.addStack(); ft.addSpacer();
+const lt = lastT ? new Date((lastT + 3 * 3600) * 1000) : null;
+txt(ft, lt ? "آخر سعر " + String(lt.getUTCHours()).padStart(2, "0") + ":" + String(lt.getUTCMinutes()).padStart(2, "0") : "ما قدرت أجيب الأسعار", 9, C.mute);
+w.refreshAfterDate = new Date(Date.now() + (open ? 5 : 60) * 60000);
+if (config.runsInWidget) Script.setWidget(w); else await w.presentMedium();
+Script.complete();
+`;
+}
+function shWidget() {
+  return `<div class="sh-h"><h2>📱 ودجيت محفظتي</h2><button class="btn ghost" data-act="close">إغلاق</button></div>
+    <div class="note">آيفون ما يسمح لتطبيقات المواقع تحط ودجيت، فنستخدم تطبيق <b>Scriptable</b> المجاني يشغّله لنا. تسويها مرة وحدة:</div>
+    <ol class="steps-ol">
+      <li>نزّل <b>Scriptable</b> من App Store (مجاني).</li>
+      <li>اضغط الزر تحت <b>«انسخ سكربت الودجيت»</b>.</li>
+      <li>افتح Scriptable ← اضغط <b>+</b> فوق ← الصق ← سمّه «محفظتي» ← Done.</li>
+      <li>اضغط على السكربت مرة عشان تشوف الشكل وتتأكد إنه شغال.</li>
+      <li>ارجع للشاشة الرئيسية ← اضغط مطوّل على مكان فاضي ← <b>+</b> (أو «تعديل» ← «إضافة أداة») ← <b>Scriptable</b> ← اختر الحجم المتوسط ← إضافة.</li>
+      <li>اضغط مطوّل على الودجيت ← «تعديل الأداة»:<br>• في خانة <bdi dir="ltr">Script</bdi> اختر <b>محفظتي</b><br>• في خانة <bdi dir="ltr">When Interacting</bdi> اختر <b><bdi dir="ltr">Open URL</bdi></b></li>
+    </ol>
+    <button class="btn pri block" data-act="widget-copy">انسخ سكربت الودجيت</button>
+    <div class="whyline">الأسعار تتحدث كل ~٥ دقائق وقت السوق (آيفون هو اللي يحدد الوقت بالضبط). أسهمك وسيولتك تنحفظ داخل السكربت، فلو بعت أو اشتريت انسخه من جديد والصقه مكان القديم.</div>`;
 }
 
 /* ───────── الحسابات ───────── */
@@ -913,19 +1322,20 @@ function vToday() {
   if (!S.holdings.length && !S.cash) return `<section class="s-head"><h2>أهلاً 👋</h2><div class="s-sub">أول شي نحمّل محفظتك.</div></section>${vaultCard()}`;
   const hr = new Date(Date.now() + 3 * 3600e3).getUTCHours();
   const top = moneyCard(c, `${hr < 12 ? 'صباح الخير' : 'مساء الخير'} · فلوسك كلها`);
-  if (!P.approved) return top + marketCard(false) + simpleIntro(c);
+  if (!P.approved) return top + firedCard() + alertsEntry() + marketCard(false) + simpleIntro(c);
   syncPlan();
   const steps = planSteps(c), act = steps.filter((x) => x.kind !== 'wait');
   const stale = M?.marketTime && Date.now() / 1000 - M.marketTime > 4 * 86400;
   const mo = P.month; const nextM = AR_MONTHS[+ses.key.slice(5, 7) % 12];
   return `${top}
     ${stale ? '<div class="s-warn">⚠️ الأسعار عندي قديمة. لا تنفّذ شي لين تتحدث (اضغط ↻ فوق).</div>' : ''}
+    ${firedCard()}${alertsEntry()}
     ${marketCard(false)}
     <section class="s-head"><h2>${act.length ? 'وش تسوي اليوم؟' : 'اليوم ما عليك شي ✓'}</h2>
       <div class="s-sub">${ses.live ? 'جلسة اليوم' : 'الجلسة الجاية'}: ${ses.label}${act.length ? ` · ${num(act.length)} ${act.length === 1 ? 'خطوة' : 'خطوات'} بالترتيب` : ''}</div></section>
     ${steps.length ? steps.map(simpleStep).join('') : '<div class="s-calm"><div class="s-big">☕</div><b>ارتاح</b><div>ما فيه شي تسويه. وإذا صار شي بقول لك الساعة ١٠ الصبح.</div></div>'}
     ${specCard(c)}
-    <div class="s-next">📅 ${mo?.picks?.length && !mo.picks.every((x) => x.done) ? `شراء ${ses.monthName}: ${mo.picks.map((x) => esc(Q(x.code)?.n || x.code)).join(' و')}` : `الشراء الجاي: أول جلسة في ${nextM}`}<br>🔔 تنبيه كل يوم تداول الساعة ١٠ الصبح<br>🔄 الأسعار تتحدث كل دقيقة وقت السوق</div>
+    <div class="s-next">📅 ${mo?.picks?.length && !mo.picks.every((x) => x.done) ? `شراء ${ses.monthName}: ${mo.picks.map((x) => esc(Q(x.code)?.n || x.code)).join(' و')}` : `الشراء الجاي: أول جلسة في ${nextM}`}<br>☀️ ملخص كل يوم تداول الساعة ١٠ الصبح<br>🔔 تنبيهات أسعارك ${apiBase() && pushOn() ? 'توصلك أول ما يوصل السعر' : 'تحتاج تفعيل (فوق)'}<br>🔄 الأسعار تتحدث ${apiBase() ? 'كل ٣٠ ثانية' : 'كل دقيقة'} وقت السوق</div>
     ${foot()}`;
 }
 function vMoney() {
@@ -970,8 +1380,7 @@ function shHold(st) {
     ${h ? `<div class="kv"><div class="cell"><div class="k">عندك</div><div class="v">${num(h.qty)} سهم</div></div><div class="cell"><div class="k">متوسط شرايك</div><div class="v">${fmt(h.cost)}</div></div>
       <div class="cell"><div class="k">قيمتها</div><div class="v">${fmt(h.value, 0)} ريال</div></div><div class="cell"><div class="k">${h.pnl >= 0 ? 'ربحك' : 'خسارتك'}</div><div class="v ${h.pnl >= 0 ? 'up' : 'down'}-t">${fmt(Math.abs(h.pnl), 0)} ريال (${pct(h.pnlPct)})</div></div></div>` : ''}
     ${P.approved ? `<div class="s-card"><div class="s-mkt-top"><b>📌 وش الخطة فيه؟</b>${r ? `<span class="vchip ${r[0]}">${r[1]}</span>` : ''}</div><div>${say}</div></div>` : ''}
-    <div class="chart">${bigChart(q, bars, chartLines(code))}
-      <div class="ranges">${[[22, 'شهر'], [65, '٣ أشهر'], [130, '٦ أشهر']].map(([n, l]) => `<button class="chip" data-act="bars" data-n="${n}" aria-pressed="${bars === n}">${l}</button>`).join('')}</div></div>
+    ${chartBlock(code, st, chartLines(code))}
     <div class="s-sub">${h ? '┅ رمادي: متوسط شرايك · ' : ''}${E ? '┅ أخضر: سعر البيع اللي نبيه · ┅ أحمر: نطلع لو نزل تحته · ' : ''}┅ ذهبي: متوسط سعره آخر ٥٠ يوم</div>
     <div class="kv">
       <div class="cell"><div class="k">أعلى سعر بالسنة</div><div class="v">${fmt(q.h52)}</div></div><div class="cell"><div class="k">أدنى سعر بالسنة</div><div class="v">${fmt(q.l52)}</div></div>
@@ -980,6 +1389,7 @@ function shHold(st) {
     </div>
     <div class="s-card"><b>🧠 رأيي فيه</b>${plainAnalysis(code, false)}</div>
     ${exitCard(code)}${timingCard(code)}
+    <button class="btn pri block" data-act="alert" data-code="${code}">🔔 نبّهني على سعر ${(S.alerts || []).filter((a) => a.code === code && !a.firedAt).length ? `(${num((S.alerts || []).filter((a) => a.code === code && !a.firedAt).length)})` : ''}</button>
     <div class="two">${watched ? `<button class="btn" data-act="watch-del" data-code="${code}">شيله من المراقبة</button>` : `<button class="btn" data-act="watch-add" data-code="${code}">👀 راقبه</button>`}<button class="btn ghost" data-act="close">إغلاق</button></div>`;
 }
 function vHelp() {
@@ -1564,6 +1974,10 @@ function renderSheet() {
   else if (st.type === 'sdone') b.innerHTML = shSDone(st);
   else if (st.type === 'shold') b.innerHTML = shHold(st);
   else if (st.type === 'rules') b.innerHTML = rulesCard(calc());
+  else if (st.type === 'alert') b.innerHTML = shAlert(st);
+  else if (st.type === 'alerts') b.innerHTML = shAlerts(st);
+  else if (st.type === 'al-pick') b.innerHTML = shPickAlert(st);
+  else if (st.type === 'widget') b.innerHTML = shWidget(st);
 }
 
 function shDetail(st) {
@@ -1584,9 +1998,7 @@ function shDetail(st) {
     <div><div class="p">${fmt(q.p)}</div><span class="chg ${dir(d?.pct)}">${num(sgn(d?.abs))} · ${pct(d?.pct, 2)}</span></div>
   </div>
   ${analysisBlock(analyze(code))}
-  <div class="chart">${bigChart(q, bars, levels)}
-    <div class="ranges">${[[22, 'شهر'], [65, '٣ أشهر'], [130, '٦ أشهر']].map(([n, l]) => `<button class="chip" data-act="bars" data-n="${n}" aria-pressed="${bars === n}">${l}</button>`).join('')}</div>
-  </div>
+  ${chartBlock(code, st, levels)}
   ${levels.length ? `<div class="explain">${owned?.stop != null ? '<span class="down-t">┅</span> وقف خسارتك ' : ''}${owned?.target != null ? '<span class="up-t">┅</span> هدفك ' : ''}${owned ? '┅ متوسطك ' : ''}${watched?.buyBelow != null ? '<span style="color:var(--info)">┅</span> سعر الشراء اللي حددته ' : ''}<span style="color:var(--gold)">┅</span> متوسط ٥٠ جلسة</div>` : `<div class="explain"><span style="color:var(--gold)">┅</span> الخط الذهبي: متوسط سعر آخر ٥٠ جلسة</div>`}
   <div class="kv">
     <div class="cell"><div class="k">أعلى ٥٢ أسبوع</div><div class="v">${fmt(q.h52)}</div></div>
@@ -1608,6 +2020,7 @@ function shDetail(st) {
       <div class="cell"><div class="k">تملك</div><div class="v">${num(owned.qty)} سهم بمتوسط ${fmt(owned.cost)}</div></div>
       <div class="cell"><div class="k">ربحك/خسارتك</div><div class="v ${dir(h.pnl)}-t">${sgn(h.pnl)} (${pct(h.pnlPct)})</div></div></div>`; })() : ''}
   ${isIdx ? '' : exitCard(code) + timingCard(code)}
+  ${isIdx ? '' : `<button class="btn pri block" data-act="alert" data-code="${esc(code)}">🔔 نبّهني على سعر</button>`}
   ${isIdx ? '' : calcBox(q, owned)}
   ${isIdx ? '' : `<div class="two">
     ${owned ? `<button class="btn pri" data-act="edit-holding" data-id="${owned.id}">تعديل في أسهمي</button>` : `<button class="btn pri" data-act="add-holding" data-code="${esc(code)}">أضفه لأسهمي</button>`}
@@ -1677,6 +2090,7 @@ function shSettings(st) {
   return `<div class="sh-h"><h2>الإعدادات</h2><button class="btn ghost" data-act="close">إغلاق</button></div>
   <div class="s-card"><b>${simple ? 'أنت على الوضع البسيط' : 'أنت على الوضع المتقدم'}</b><div class="s-sub">${simple ? 'المتقدم فيه التحليل الكامل والرسومات وكل أسهم السوق.' : 'البسيط فيه خطواتك بس، بدون مصطلحات.'}</div>
     <button class="btn block" data-act="${simple ? 'mode-adv' : 'mode-simple'}">${simple ? 'افتح الوضع المتقدم' : 'ارجع للوضع البسيط'}</button></div>
+  <button class="btn pri block" data-act="alerts">🔔 التنبيهات والمحرك والودجيت</button>
   <form class="form" id="cashForm"><label class="field">السيولة النقدية (ريال)<input id="f-cash" class="n" inputmode="decimal" value="${S.cash ?? ''}"></label>
     <button class="btn pri block" type="submit">حفظ السيولة</button></form>
   ${S.plan?.approved ? `<div class="s-card"><b>🎲 المضاربة: ${S.plan.spec?.on ? `مفعّلة (${num(fmt(S.plan.spec.budget, 0))} ريال)` : 'موقفة'}</b>
@@ -1714,8 +2128,22 @@ document.addEventListener('click', async (e) => {
   switch (a) {
     case 'detail': openSheet({ type: 'detail', code: t.dataset.code }); break;
     case 'bars': st.bars = +t.dataset.n; renderSheet(); break;
+    case 'rng': st.rng = /^\d+$/.test(t.dataset.n) ? +t.dataset.n : t.dataset.n; renderSheet(); break;
     case 'use-levels': { const a = $('#f-stop'), b = $('#f-target'); if (a) a.value = t.dataset.stop; if (b) b.value = t.dataset.target; toast('حطيت المستويات المقترحة، اضغط حفظ'); break; }
     case 'close': closeSheet(); break;
+    case 'alerts': openSheet({ type: 'alerts' }); pingApi().then(() => sheetState?.type === 'alerts' && renderSheet()); break;
+    case 'alert': openSheet({ type: 'alert', code: t.dataset.code, act: S.holdings.some((h) => h.code === t.dataset.code) ? 'sell' : 'buy' }); break;
+    case 'al-pick': openSheet({ type: 'al-pick' }); break;
+    case 'al-fill': { st.price = t.dataset.v; st.act = t.dataset.a; st.note = $('#al-note')?.value || st.note; renderSheet(); break; }
+    case 'al-act': { st.act = t.dataset.a; st.price = $('#al-price')?.value ?? st.price; st.note = $('#al-note')?.value || st.note; renderSheet(); break; }
+    case 'al-del': { S.alerts = (S.alerts || []).filter((x) => x.id !== t.dataset.id); save(); syncSoon(); render(); if (st) renderSheet(); toast('انحذف التنبيه'); break; }
+    case 'al-rearm': { const x = (S.alerts || []).find((y) => y.id === t.dataset.id); if (x) { delete x.firedAt; delete x.firedP; delete x.seen; x.on = true; x.rev = (x.rev || 0) + 1; save(); syncSoon(); render(); if (st) renderSheet(); toast('رجع يراقب'); } break; }
+    case 'al-seen': { const x = (S.alerts || []).find((y) => y.id === t.dataset.id); if (x) { x.seen = true; save(); render(); } break; }
+    case 'push-on': enablePush(); break;
+    case 'push-off': disablePush(); break;
+    case 'push-test': { const d = await syncAlerts({ test: true }); toast(d?.test === 'ok' ? 'أرسلت إشعار تجربة' : 'ما وصل. جرّب «أوقفها» ثم فعّلها من جديد'); break; }
+    case 'widget': openSheet({ type: 'widget' }); break;
+    case 'widget-copy': { const code = widgetScript(); try { await navigator.clipboard.writeText(code); toast('انسخ ✓ الحين الصقه في Scriptable'); } catch { toast('ما قدرت أنسخ تلقائياً'); } break; }
     case 'settings': openSheet({ type: 'settings' }); break;
     case 'add-holding': openSheet({ type: 'holding', code: t.dataset.code || null }); break;
     case 'add-watch': openSheet({ type: 'watch', code: t.dataset.code || null }); break;
@@ -1779,7 +2207,7 @@ document.addEventListener('click', async (e) => {
       catch { toast('النص مو نسخة صحيحة'); } break;
     }
     case 'wipe': if (!st.confirmWipe) { st.confirmWipe = true; renderSheet(); break; } S = blank(); save(); closeSheet(); render(); toast('انمسحت البيانات'); break;
-    case 'do-import': S = Object.assign(blank(), st.data); save(); closeSheet(); render(); toast('تم استيراد محفظتك'); break;
+    case 'do-import': S = Object.assign(blank(), { alerts: S.alerts, moveAlert: S.moveAlert, api: S.api }, st.data); save(); closeSheet(); render(); toast('تم استيراد محفظتك'); break;
     case 'install': if (deferredInstall) { deferredInstall.prompt(); deferredInstall = null; $('#installBar').hidden = true; } break;
     case 'hide-install': $('#installBar').hidden = true; try { localStorage.setItem('mahfazti.noinstall', '1'); } catch {} break;
   }
@@ -1802,6 +2230,12 @@ document.addEventListener('input', (e) => {
     mktQuery = e.target.value; const pos = e.target.selectionStart; render();
     const el = $('#mktSearch'); if (el) { el.focus(); el.setSelectionRange(pos, pos); }
   }
+  if (e.target.id === 'al-price') {
+    const q = Q(sheetState.code), pr = N(e.target.value), el = $('#al-hint'); if (!el) return;
+    el.innerHTML = pr != null && q?.p ? `${pr >= q.p ? '⬆️ يعني لو طلع لـ' : '⬇️ يعني لو نزل لـ'} ${num(fmt(pr))} أو ${pr >= q.p ? 'فوق' : 'تحت'} (${pct((pr - q.p) / q.p * 100)} عن الحين)` : 'اكتب السعر، وأنا أعرف لحالي إذا تقصد طلوع أو نزول.';
+    return;
+  }
+  if (e.target.id === 'f-move') { S.moveAlert = +e.target.value; save(); syncSoon(); toast('انحفظ'); return; }
   if (e.target.id === 'pickQ') {
     sheetState.q = e.target.value.trim(); const pos = e.target.selectionStart; renderSheet();
     const el = $('#pickQ'); if (el) { el.focus(); el.setSelectionRange(pos, pos); }
@@ -1821,6 +2255,20 @@ document.addEventListener('submit', (e) => {
     const m = parseInt(g('pl-months'), 10), b = N(g('pl-buffer'));
     if (m >= 1 && m <= 24) S.plan.months = m; if (b != null && b >= 0 && b <= 50) S.plan.buffer = b / 100;
     S.plan.month = null; save(); syncPlan(); render(); toast('انحفظت إعدادات الخطة'); return;
+  }
+  if (e.target.id === 'alertForm') {
+    const st = sheetState, q = Q(st.code), pr = N(g('al-price'));
+    if (!pr || pr <= 0) return toast('اكتب السعر');
+    S.alerts = S.alerts || [];
+    S.alerts.push({ id: uid(), code: st.code, op: q?.p && pr < q.p ? '<=' : '>=', price: pr, act: st.act || 'note', note: g('al-note'), on: true, rev: 1, at: new Date().toISOString() });
+    save(); syncSoon(); st.price = ''; st.note = ''; renderSheet(); render();
+    toast(apiBase() && pushOn() ? 'انحفظ ✓ بيوصلك إشعار أول ما يوصل' : 'انحفظ ✓ فعّل الإشعارات عشان يوصلك وهو مقفول'); return;
+  }
+  if (e.target.id === 'apiForm') {
+    let v = g('f-api'); if (v && !/^https?:\/\//.test(v)) v = 'https://' + v;
+    S.api = v.replace(/\/+$/, ''); save();
+    pingApi().then(() => { toast(!S.api ? 'شلت الربط' : apiOk ? 'المحرك مربوط ✓' : 'الرابط ما يرد. تأكد منه'); if (apiOk) syncAlerts(); renderSheet(); });
+    return;
   }
   if (e.target.id === 'cashForm') { const v = N(g('f-cash')); if (v != null) { S.cash = v; save(); render(); toast('انحفظت السيولة'); } return; }
   if (e.target.id !== 'recForm') return;
@@ -1846,7 +2294,7 @@ async function openVault(code) {
     const key = await crypto.subtle.deriveKey({ name: 'PBKDF2', salt: b(v.salt), iterations: v.iter, hash: 'SHA-256' }, base, { name: 'AES-GCM', length: 256 }, false, ['decrypt']);
     const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: b(v.iv) }, key, b(v.ct));
     const d = JSON.parse(new TextDecoder().decode(pt));
-    S = Object.assign(blank(), d); save(); render(); toast('انحمّلت محفظتك');
+    S = Object.assign(blank(), { alerts: S.alerts, moveAlert: S.moveAlert, api: S.api }, d); save(); render(); toast('انحمّلت محفظتك'); syncSoon();
   } catch { toast('الرمز غلط'); }
 }
 
@@ -1877,6 +2325,14 @@ function readImportHash() {
   } catch { return null; }
 }
 
+function openStock(code) { if (!code) return; openSheet({ type: simple ? 'shold' : 'detail', code }); }
+function openFromHash() {
+  const m = location.hash.match(/^#stock=(\w+)/); if (!m) return;
+  try { history.replaceState(null, '', location.pathname); } catch {}
+  const a = (S.alerts || []).find((x) => x.code === m[1] && x.firedAt && !x.seen);
+  openStock(m[1]); if (a) pullAlerts();
+}
+
 /* ───────── التشغيل ───────── */
 async function boot() {
   const h = location.hash.slice(1); if (['today', 'money', 'smarket', 'help', 'steps', 'home', 'holdings', 'market', 'watch', 'learn'].includes(h)) view = h;
@@ -1890,19 +2346,31 @@ async function boot() {
   await fetchSignals();
   await fetchMarket(false);
   syncPlan(); render();
+  checkLocal();
   if (imp) openSheet({ type: 'import', data: imp });
+  openFromHash();
   iosHint();
-  // وقت التداول: آخر الأسعار كل ~٧٠ ثانية، والبيانات الكاملة كل ٥ دقائق
+  if (apiBase()) { pingApi(); syncAlerts(); }
+  // وقت التداول: أسهمك من المحرك كل ٣٠ ثانية، وكل السوق كل ~٧٠ ثانية، والبيانات الكاملة كل ٥ دقائق
+  setInterval(() => { if (document.visibilityState === 'visible' && marketOpen() && apiBase()) fetchApiQuotes(); }, 30000);
+  if (marketOpen() && apiBase()) fetchApiQuotes();
   setInterval(() => { if (document.visibilityState === 'visible' && marketOpen()) fetchLive(); }, 70000);
   setInterval(() => { if (document.visibilityState === 'visible' && marketOpen()) fetchMarket(false).then(fetchLive); }, 300000);
   if (marketOpen()) fetchLive();
   setInterval(renderStatus, 30000);
-  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && Date.now() - lastFetch > 60000) fetchMarket(false).then(() => { if (marketOpen()) fetchLive(); }); });
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'visible') return;
+    pullAlerts();
+    if (Date.now() - lastFetch > 60000) fetchMarket(false).then(() => { if (marketOpen()) { fetchLive(); fetchApiQuotes(); } });
+  });
+  window.addEventListener('hashchange', openFromHash);
   if ('serviceWorker' in navigator) {
     // لما ينزل تحديث للتطبيق، يعيد التحميل مرة وحدة عشان تشوف النسخة الجديدة فوراً
     let reloaded = false;
     navigator.serviceWorker.addEventListener('controllerchange', () => { if (!reloaded) { reloaded = true; location.reload(); } });
     navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then((r) => r.update()).catch(() => {});
+    // ضغطت على إشعار؟ نفتح السهم
+    navigator.serviceWorker.addEventListener('message', (e) => { if (e.data?.open) openStock(e.data.open); });
   }
 }
 boot();
