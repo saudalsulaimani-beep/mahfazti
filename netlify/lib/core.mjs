@@ -3,7 +3,7 @@ import { getStore } from '@netlify/blobs';
 import * as webpush from 'web-push';
 
 export const UA = 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1';
-export const APP_URL = 'https://saudalsulaimani-beep.github.io/mahfazti/';
+export const APP_URL = "https://saudalsulaimani-beep.github.io/mahfazti/";
 const LIVE_RAW = 'https://raw.githubusercontent.com/saudalsulaimani-beep/mahfazti/live/live.json';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 

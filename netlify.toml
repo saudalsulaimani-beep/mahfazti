@@ -1,9 +1,20 @@
-# Netlify هنا محرك خلفي بس (التنبيهات، رسم اليوم، الأسعار الحية). الواجهة نفسها تبقى على GitHub Pages.
+# التطبيق كامل على Netlify (الواجهة + المحرك: الإشعارات، رسم اليوم، الأسعار الحية).
+# GitHub يبقى مكان الكود، ويحدّث ملفات الأسعار والتحليل تلقائياً، والتطبيق يقراها من هناك.
 [build]
-  publish = "netlify/public"
-  # كل نشر يكلّف رصيد من الخطة المجانية، فما ننشر إلا لو تغيّر كود المحرك نفسه
-  # (تحديثات الأسعار والتحليل اليومي ما تحتاج نشر هنا)
-  ignore = "git diff --quiet $CACHED_COMMIT_REF $COMMIT_REF -- netlify/ netlify.toml package.json"
+  publish = "."
+  # كل نشر ياخذ من رصيد الخطة المجانية، فما ننشر إلا لو تغيّر التطبيق نفسه
+  # (تحديثات الأسعار والتحليل اليومي ما تحتاج نشر)
+  ignore = "git diff --quiet $CACHED_COMMIT_REF $COMMIT_REF -- app.js app.css index.html sw.js manifest.webmanifest icons netlify netlify.toml package.json"
 
 [functions]
   node_bundler = "esbuild"
+
+[[headers]]
+  for = "/sw.js"
+  [headers.values]
+    Cache-Control = "no-cache"
+
+[[headers]]
+  for = "/*.html"
+  [headers.values]
+    Cache-Control = "no-cache"

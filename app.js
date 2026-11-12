@@ -17,6 +17,11 @@ const dir = (n) => (n == null || Math.abs(n) < 0.005 ? 'flat' : n > 0 ? 'up' : '
 const uid = () => Math.random().toString(36).slice(2, 9);
 const COLORS = ['#E2B95E', '#7FD3B4', '#8FB8E8', '#E59A8C', '#C3A6E6', '#B9D77A', '#F0D9A2'];
 const KEY = 'mahfazti.v1';
+// التطبيق ينفتح من Netlify، وملفات البيانات (الأسعار والتحليل) تتحدث تلقائياً على GitHub ونقراها من هناك
+const ON_GH = location.hostname.endsWith('.github.io');
+const DATA = ON_GH || location.hostname === 'localhost' ? 'data/' : 'https://saudalsulaimani-beep.github.io/mahfazti/data/';
+// الرابط الجديد للتطبيق على Netlify (لما ينحط، النسخة القديمة على GitHub تعرض زر «انقل بياناتي»)
+const NEW_HOME = '';
 
 /* ───────── الحالة ───────── */
 let S = load();            // {cash, holdings:[{id,code,name,qty,cost,stop,target,manual}], watch:[{id,code,name,buyBelow,note}]}
@@ -57,7 +62,7 @@ function sma(c, p) { if (!c || c.length < p) return null; return c.slice(-p).red
 async function fetchMarket(manual) {
   const btn = $('#refreshBtn'); btn.classList.add('spinning');
   try {
-    const r = await fetch('data/market.json?t=' + Date.now(), { cache: 'no-store' });
+    const r = await fetch(DATA + 'market.json?t=' + Date.now(), { cache: 'no-store' });
     if (!r.ok) throw new Error(r.status);
     M = await r.json(); lastFetch = Date.now(); liveAt = null;
     if (Date.now() - sigAt > 3 * 3600e3) await fetchSignals();
@@ -328,7 +333,7 @@ function hourTable(I) {
 }
 
 /* ───────── المحرك (Netlify): التنبيهات والأسعار الحية ───────── */
-const DEFAULT_API = '';
+const DEFAULT_API = location.hostname.endsWith('.netlify.app') ? location.origin : '';
 function apiBase() { return (S.api || DEFAULT_API || '').trim().replace(/\/+$/, ''); }
 function devId() {
   let id = null; try { id = localStorage.getItem('mahfazti.dev'); } catch {}
@@ -475,9 +480,10 @@ function shAlerts(st) {
   const A = S.alerts || [], wait = A.filter((a) => !a.firedAt), done = A.filter((a) => a.firedAt);
   const ios = /iphone|ipad/i.test(navigator.userAgent);
   return `<div class="sh-h"><h2>🔔 التنبيهات والمحرك</h2><button class="btn ghost" data-act="close">إغلاق</button></div>
-    <section class="s-card"><b>١. المحرك (Netlify) ${apiBase() ? (apiOk === false ? '<span class="vchip loss">ما يرد</span>' : '<span class="vchip gain">مربوط ✓</span>') : '<span class="vchip warn">مو مربوط</span>'}</b>
+    <section class="s-card"><b>١. المحرك ${apiBase() ? (apiOk === false ? '<span class="vchip loss">ما يرد</span>' : '<span class="vchip gain">مربوط ✓</span>') : '<span class="vchip warn">مو مربوط</span>'}</b>
       <div class="s-sub">هو اللي يراقب الأسعار كل دقيقة وأنت جوالك مقفول، ويرسل لك الإشعار. ويعطيك رسم اليوم وسعر كل ساعة.</div>
-      <form class="form" id="apiForm" autocomplete="off"><label class="field">رابط المحرك<input id="f-api" dir="ltr" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="https://xxxx.netlify.app" value="${esc(S.api || '')}"></label>
+      ${DEFAULT_API && !S.api ? '<div class="s-sub">✓ مربوط تلقائياً لأن التطبيق نفسه على Netlify.</div>' : ''}
+      <form class="form" id="apiForm" autocomplete="off" ${DEFAULT_API && !S.api ? 'hidden' : ''}><label class="field">رابط المحرك<input id="f-api" dir="ltr" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="https://xxxx.netlify.app" value="${esc(S.api || '')}"></label>
       <button class="btn block" type="submit">${apiBase() ? 'حفظ وفحص' : 'ربط'}</button></form></section>
     <section class="s-card"><b>٢. الإشعارات على جوالك ${pushOn() ? '<span class="vchip gain">مفعّلة ✓</span>' : '<span class="vchip warn">مقفلة</span>'}</b>
       ${pushOn() ? `<div class="two"><button class="btn" data-act="push-test">أرسل تجربة</button><button class="btn ghost" data-act="push-off">أوقفها</button></div>`
@@ -509,6 +515,12 @@ function firedCard() {
       <div class="s-sub">${a.op === '>=' ? 'طلع فوق' : 'نزل تحت'} ${num(fmt(a.price))} اللي حددته · ${ACTS[a.act][1]}${a.note ? ' · ' + esc(a.note) : ''}</div></div>
       <div class="al-btns"><button class="btn" data-act="al-seen" data-id="${a.id}">شفته</button></div></div>`).join('')}
   </section>`;
+}
+function moveCard() {
+  if (!ON_GH || !NEW_HOME) return '';
+  return `<section class="s-card al-fired"><b>🏠 التطبيق انتقل لبيت جديد</b>
+    <div class="s-sub">صار على Netlify وفيه الإشعارات. اضغط الزر وتنتقل أسهمك وخطتك وتنبيهاتك كلها، وبعدها أضف الأيقونة الجديدة للشاشة الرئيسية واحذف القديمة.</div>
+    <button class="btn pri block" data-act="move-home">انقل بياناتي للتطبيق الجديد</button></section>`;
 }
 function alertsEntry() {
   const n = (S.alerts || []).filter((a) => a.on && !a.firedAt).length;
@@ -837,7 +849,7 @@ function lvlLine(L) {
 let SIG = {}, sigAt = 0;
 const SG = (code) => SIG.s?.[code] || null;
 async function fetchSignals() {
-  try { const r = await fetch('data/signals.json?t=' + Date.now(), { cache: 'no-store' }); if (r.ok) { SIG = await r.json(); sigAt = Date.now(); _mc.clear(); } } catch { /* بدونها التطبيق يشتغل عادي */ }
+  try { const r = await fetch(DATA + 'signals.json?t=' + Date.now(), { cache: 'no-store' }); if (r.ok) { SIG = await r.json(); sigAt = Date.now(); _mc.clear(); } } catch { /* بدونها التطبيق يشتغل عادي */ }
 }
 const pc0 = (x) => num(x == null ? '—' : Math.round(x) + '%');
 function seeded(seed) { let a = seed >>> 0; return () => { a = (a + 0x6D2B79F5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
@@ -1322,12 +1334,12 @@ function vToday() {
   if (!S.holdings.length && !S.cash) return `<section class="s-head"><h2>أهلاً 👋</h2><div class="s-sub">أول شي نحمّل محفظتك.</div></section>${vaultCard()}`;
   const hr = new Date(Date.now() + 3 * 3600e3).getUTCHours();
   const top = moneyCard(c, `${hr < 12 ? 'صباح الخير' : 'مساء الخير'} · فلوسك كلها`);
-  if (!P.approved) return top + firedCard() + alertsEntry() + marketCard(false) + simpleIntro(c);
+  if (!P.approved) return moveCard() + top + firedCard() + alertsEntry() + marketCard(false) + simpleIntro(c);
   syncPlan();
   const steps = planSteps(c), act = steps.filter((x) => x.kind !== 'wait');
   const stale = M?.marketTime && Date.now() / 1000 - M.marketTime > 4 * 86400;
   const mo = P.month; const nextM = AR_MONTHS[+ses.key.slice(5, 7) % 12];
-  return `${top}
+  return `${moveCard()}${top}
     ${stale ? '<div class="s-warn">⚠️ الأسعار عندي قديمة. لا تنفّذ شي لين تتحدث (اضغط ↻ فوق).</div>' : ''}
     ${firedCard()}${alertsEntry()}
     ${marketCard(false)}
@@ -2140,6 +2152,13 @@ document.addEventListener('click', async (e) => {
     case 'al-rearm': { const x = (S.alerts || []).find((y) => y.id === t.dataset.id); if (x) { delete x.firedAt; delete x.firedP; delete x.seen; x.on = true; x.rev = (x.rev || 0) + 1; save(); syncSoon(); render(); if (st) renderSheet(); toast('رجع يراقب'); } break; }
     case 'al-seen': { const x = (S.alerts || []).find((y) => y.id === t.dataset.id); if (x) { x.seen = true; save(); render(); } break; }
     case 'push-on': enablePush(); break;
+    case 'move-home': {
+      let hist = []; try { hist = JSON.parse(localStorage.getItem('mahfazti.hist')) || []; } catch {}
+      const bytes = new TextEncoder().encode(JSON.stringify({ ...S, _hist: hist }));
+      let bin = ''; bytes.forEach((b) => (bin += String.fromCharCode(b)));
+      location.href = NEW_HOME.replace(/\/?$/, '/') + '#import=' + btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+      break;
+    }
     case 'push-off': disablePush(); break;
     case 'push-test': { const d = await syncAlerts({ test: true }); toast(d?.test === 'ok' ? 'أرسلت إشعار تجربة' : 'ما وصل. جرّب «أوقفها» ثم فعّلها من جديد'); break; }
     case 'widget': openSheet({ type: 'widget' }); break;
@@ -2207,7 +2226,10 @@ document.addEventListener('click', async (e) => {
       catch { toast('النص مو نسخة صحيحة'); } break;
     }
     case 'wipe': if (!st.confirmWipe) { st.confirmWipe = true; renderSheet(); break; } S = blank(); save(); closeSheet(); render(); toast('انمسحت البيانات'); break;
-    case 'do-import': S = Object.assign(blank(), { alerts: S.alerts, moveAlert: S.moveAlert, api: S.api }, st.data); save(); closeSheet(); render(); toast('تم استيراد محفظتك'); break;
+    case 'do-import':
+      if (st.data._hist) { try { localStorage.setItem('mahfazti.hist', JSON.stringify(st.data._hist)); } catch {} delete st.data._hist; }
+      if (DEFAULT_API) delete st.data.api;
+      S = Object.assign(blank(), { alerts: S.alerts, moveAlert: S.moveAlert, api: S.api }, st.data); save(); closeSheet(); render(); toast('تم استيراد محفظتك'); syncSoon(); break;
     case 'install': if (deferredInstall) { deferredInstall.prompt(); deferredInstall = null; $('#installBar').hidden = true; } break;
     case 'hide-install': $('#installBar').hidden = true; try { localStorage.setItem('mahfazti.noinstall', '1'); } catch {} break;
   }
@@ -2288,7 +2310,7 @@ document.addEventListener('submit', (e) => {
 async function openVault(code) {
   if (!code) return toast('اكتب الرمز');
   try {
-    const v = await (await fetch('data/vault.json?t=' + Date.now())).json();
+    const v = await (await fetch(DATA + 'vault.json?t=' + Date.now())).json();
     const b = (x) => Uint8Array.from(atob(x), (c) => c.charCodeAt(0));
     const base = await crypto.subtle.importKey('raw', new TextEncoder().encode(code.trim()), 'PBKDF2', false, ['deriveKey']);
     const key = await crypto.subtle.deriveKey({ name: 'PBKDF2', salt: b(v.salt), iterations: v.iter, hash: 'SHA-256' }, base, { name: 'AES-GCM', length: 256 }, false, ['decrypt']);
@@ -2340,9 +2362,9 @@ async function boot() {
   if (!simple && SIMPLE_VIEWS.includes(view)) view = 'steps';
   renderTabs();
   const imp = readImportHash();
-  try { TICK = await (await fetch('data/tickers.json')).json(); } catch { TICK = []; }
-  try { NOTES = await (await fetch('data/notes.json?t=' + Date.now())).json(); } catch { NOTES = {}; }
-  try { FUND = await (await fetch('data/fundamentals.json?t=' + Date.now())).json(); } catch { FUND = {}; }
+  try { TICK = await (await fetch(DATA + 'tickers.json')).json(); } catch { TICK = []; }
+  try { NOTES = await (await fetch(DATA + 'notes.json?t=' + Date.now())).json(); } catch { NOTES = {}; }
+  try { FUND = await (await fetch(DATA + 'fundamentals.json?t=' + Date.now())).json(); } catch { FUND = {}; }
   await fetchSignals();
   await fetchMarket(false);
   syncPlan(); render();
